@@ -75,10 +75,8 @@ fun backupJson(ctx: Context): String {
 /** Restores a backup: the app state now, the book-sources section in the background. */
 fun restoreBackup(ctx: Context, text: String, done: (problems: List<String>) -> Unit = {}) {
     val app = ctx.app()
-    app.store.importJson(text)
-    val section = runCatching {
-        (io.github.notoboto.unison.data.json.parseToJsonElement(text) as kotlinx.serialization.json.JsonObject)[io.github.notoboto.unison.sources.SourcesBackup.KEY] as? kotlinx.serialization.json.JsonObject
-    }.getOrNull()
+    val (state, section) = io.github.notoboto.unison.sources.SourcesBackup.split(text)
+    app.store.importJson(state)
     app.scope.launch {
         val problems = if (section == null) emptyList() else kotlinx.coroutines.withContext(Dispatchers.IO) {
             runCatching { io.github.notoboto.unison.sources.SourcesBackup.restore(ctx, app.sources, section) }.getOrElse { listOf(it.message ?: it.toString()) }

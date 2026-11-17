@@ -18,7 +18,9 @@ import kotlinx.serialization.json.put
 import java.io.File
 
 /**
- * Book sources in the app backup (SOURCES_DESIGN.md §13): a "sources" section next to the app state.
+ * Book sources in the app backup (SOURCES_DESIGN.md §13): a "bookSources" section next to the app state.
+ * (Backups made before 2026-11-17 wrote it under "sources", which overwrote the state's list of catalogs and made
+ *  those files unreadable; [split] still reads them.)
  *
  * In: added repositories, installed plugins (id, repository, version — the code itself is downloaded again and
  * checked against the signed index), plugin storage, plugin books (meta, origin, chapter table, index).
@@ -26,7 +28,21 @@ import java.io.File
  * Older app versions ignore the section (the state is read with ignoreUnknownKeys).
  */
 object SourcesBackup {
-    const val KEY = "sources"
+    const val KEY = "bookSources"
+    private const val LEGACY_KEY = "sources"
+
+    /**
+     * Splits a backup file into the app state (as JSON text) and the book-sources section. An old-format section
+     * (an object under "sources", where the state keeps its list of catalogs) is taken out of the state, which then
+     * falls back to the default catalog list.
+     */
+    fun split(text: String): Pair<String, JsonObject?> {
+        val all = json.parseToJsonElement(text) as JsonObject
+        val section = all[KEY] as? JsonObject
+        val legacy = all[LEGACY_KEY] as? JsonObject
+        val state = if (legacy != null) JsonObject(all - LEGACY_KEY - KEY) else JsonObject(all - KEY)
+        return state.toString() to (section ?: legacy)
+    }
     private const val FORMAT = 1
     private val BOOK_FILES = listOf("meta.json", "origin.json", "chapters.json", "index.json")
 
