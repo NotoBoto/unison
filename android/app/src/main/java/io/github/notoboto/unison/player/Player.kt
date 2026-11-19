@@ -45,7 +45,8 @@ class PlaybackService : MediaLibraryService() {
         val app = application as UnisonApp
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java).putExtra("openPlayer", true),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        session = MediaLibrarySession.Builder(this, app.player.sessionPlayer, AutoLibrary(app)).setSessionActivity(open).build()
+        session = MediaLibrarySession.Builder(this, app.player.sessionPlayer, AutoLibrary(app)).setSessionActivity(open)
+            .setBitmapLoader(androidx.media3.session.CacheBitmapLoader(SessionArtLoader(this))).build()
         app.player.session = session
     }
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo) = session
@@ -58,6 +59,34 @@ class PlaybackService : MediaLibraryService() {
         runCatching { (application as UnisonApp).store.flush() }    // the position may only be held for a lazy write
         session?.release(); session = null
         super.onDestroy()
+    }
+}
+
+/**
+ * Covers for the media session (notification, system media controls, Android Auto). Live subtitles re-send the
+ * metadata every sentence, and the system scaled the full-size cover and copied it through binder each time.
+ * The cover is now scaled once, exactly as the system would (same limit, same arithmetic, filtered), and on
+ * Android 12+ kept in shared memory so passing it on copies no pixels.
+ */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+private class SessionArtLoader(ctx: Context) : androidx.media3.common.util.BitmapLoader {
+    private val inner = androidx.media3.datasource.DataSourceBitmapLoader(ctx)
+    private val maxPx = android.content.res.Resources.getSystem().let { r ->
+        r.getIdentifier("config_mediaMetadataBitmapMaxSize", "dimen", "android").takeIf { it != 0 }?.let(r::getDimensionPixelSize) ?: 0
+    }
+    override fun supportsMimeType(mimeType: String) = inner.supportsMimeType(mimeType)
+    override fun decodeBitmap(data: ByteArray) = prepared(inner.decodeBitmap(data))
+    override fun loadBitmap(uri: Uri) = prepared(inner.loadBitmap(uri))
+    private fun prepared(f: com.google.common.util.concurrent.ListenableFuture<android.graphics.Bitmap>) =
+        com.google.common.util.concurrent.Futures.transform(f, ::prepare, com.google.common.util.concurrent.MoreExecutors.directExecutor())
+    private fun prepare(b: android.graphics.Bitmap): android.graphics.Bitmap {
+        var r = b
+        // android.media.MediaMetadata.Builder#scaleBitmap: the same limit and arithmetic, so the system then leaves it alone
+        if (maxPx > 0 && (b.width > maxPx || b.height > maxPx)) {
+            val s = minOf(maxPx.toFloat() / b.width, maxPx.toFloat() / b.height)
+            r = android.graphics.Bitmap.createScaledBitmap(b, (b.width * s).toInt(), (b.height * s).toInt(), true)
+        }
+        return if (android.os.Build.VERSION.SDK_INT >= 31) r.asShared() else r
     }
 }
 
