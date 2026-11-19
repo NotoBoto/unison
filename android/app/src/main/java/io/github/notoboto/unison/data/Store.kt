@@ -106,6 +106,16 @@ class Store(context: Context, scope: CoroutineScope) {
     fun editBookmark(book: String, b: Bookmark, note: String) = update { st ->
         st.copy(bookmarks = st.bookmarks + (book to st.bookmarks[book].orEmpty().map { if (it == b) it.copy(note = note) else it }))
     }
+    /** Fixes the role colours of chapter [n] (data/RoleColors.kt), once per chapter. Incognito writes nothing:
+     *  the reader then works colours out on the fly from what is already fixed. */
+    fun learnRoles(book: String, n: Int, roles: List<String>) {
+        if (incognito || roles.size <= 1) return
+        update { st ->
+            val old = st.roleColors[book] ?: BookRoles()
+            val new = RoleColors.learn(old, roles, n)
+            if (new === old) st else st.copy(roleColors = st.roleColors + (book to new))
+        }
+    }
 
     fun opened(book: String, n: Int) = if (incognito) update { it.copy(last = it.last + (book to n)) } else update { st ->
         st.copy(last = st.last + (book to n), lastTs = st.lastTs + (book to System.currentTimeMillis()),

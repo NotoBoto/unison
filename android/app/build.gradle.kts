@@ -130,6 +130,7 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("org.jetbrains.kotlin:kotlin-test-junit")
+    testImplementation("org.jetbrains.kotlin:kotlin-test-junit")
 }
 
 // Native Piper engine packages for the app to download: only the two libraries the JNI wrapper needs

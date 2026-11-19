@@ -175,6 +175,16 @@ data class Highlight(val n: Int, val p: Int, val a: Int, val b: Int, val color: 
 @Serializable
 data class BookEdit(val title: String? = null, val cover: String? = null)
 
+/** Reader role colours of one book (ROLE_COLORS_GROOM.md): each character keeps one colour for the whole book.
+ *  [color]: name -> colour number in the reader palette (ui/Theme.kt), [seen]: name -> chapters met in (seniority when two
+ *  share a colour), [chapters]: chapters already counted in [seen]. */
+@Serializable
+data class BookRoles(
+    val color: Map<String, Int> = emptyMap(),
+    val seen: Map<String, Int> = emptyMap(),
+    val chapters: Set<Int> = emptySet(),
+)
+
 @Serializable
 data class AppState(
     val sources: List<Source> = listOf(DEFAULT_SOURCE),
@@ -196,6 +206,7 @@ data class AppState(
     val statsDays: Map<String, Long> = emptyMap(),                 // yyyy-MM-dd -> ms listened
     val statsBooks: Map<String, Long> = emptyMap(),                // bookKey -> ms listened
     val knownChapters: Map<String, Int> = emptyMap(),              // bookKey -> chapter count seen by the background check
+    val roleColors: Map<String, BookRoles> = emptyMap(),          // bookKey -> reader role colours (not in sync files)
     /** Parts of sync files this app does not handle, written back unchanged on export (SYNC_FORMAT.md, §11):
      *  {"top": unknown top-level fields, "books": {key: unknown fields}, "foreign": {key: whole entry}, "history": [...]}. */
     val syncExtra: kotlinx.serialization.json.JsonObject = kotlinx.serialization.json.JsonObject(emptyMap()),
