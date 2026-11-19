@@ -66,6 +66,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -591,7 +592,9 @@ fun CarScreen(nav: NavController) {
     val p = app.player
     val now by p.now.collectAsState()
     val playing by p.isPlaying.collectAsState()
-    val pos by p.position.collectAsState()
+    // read where it is shown: the progress bar in its draw lambda, the time through a derived string (once a second)
+    val posState = p.position.collectAsState()
+    val time by remember { derivedStateOf { fmt(posState.value) + " / " + fmt(now?.duration ?: 0.0) } }
     val sentence by p.sentence.collectAsState()
     val view = androidx.compose.ui.platform.LocalView.current
     androidx.compose.runtime.DisposableEffect(Unit) { view.keepScreenOn = true; onDispose { view.keepScreenOn = false } }
@@ -605,8 +608,8 @@ fun CarScreen(nav: NavController) {
         }
         Text(sentence, Modifier.weight(1f).fillMaxWidth().padding(vertical = 16.dp), color = androidx.compose.ui.graphics.Color(0xFFDDDDDD),
             fontSize = 26.sp, lineHeight = 34.sp, maxLines = 6, overflow = TextOverflow.Ellipsis)
-        LinearProgressIndicator(progress = { now?.let { (pos / it.duration).toFloat().coerceIn(0f, 1f) } ?: 0f }, Modifier.fillMaxWidth().height(6.dp))
-        Text(fmt(pos) + " / " + fmt(now?.duration ?: 0.0), color = androidx.compose.ui.graphics.Color.Gray, fontSize = 18.sp, modifier = Modifier.padding(vertical = 8.dp))
+        LinearProgressIndicator(progress = { now?.let { (posState.value / it.duration).toFloat().coerceIn(0f, 1f) } ?: 0f }, Modifier.fillMaxWidth().height(6.dp))
+        Text(time, color = androidx.compose.ui.graphics.Color.Gray, fontSize = 18.sp, modifier = Modifier.padding(vertical = 8.dp))
         val big = Modifier.weight(1f).height(120.dp)
         val c = MaterialTheme.colorScheme
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
