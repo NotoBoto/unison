@@ -63,6 +63,14 @@ android {
             if (signProps.isNotEmpty()) signingConfig = signingConfigs.getByName("release")
         }
         debug { applicationIdSuffix = ".debug"; ndk { abiFilters += listOf("x86_64") } }   // + emulator
+        // measurements only: release code (R8, not debuggable) signed with the debug key, installed next to release and debug
+        create("bench") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".bench"
+            signingConfig = signingConfigs.getByName("debug")
+            proguardFile("proguard-bench.pro")       // readable names in simpleperf; optimisation stays as in release
+            matchingFallbacks += listOf("release")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
