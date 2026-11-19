@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.floor
 import kotlin.math.sqrt
 
 /** Background playback: MediaSession + notification + lock screen + headset buttons. */
@@ -91,6 +92,7 @@ private class SessionArtLoader(ctx: Context) : androidx.media3.common.util.Bitma
 }
 
 private const val TICK_MS = 200L
+private const val WORD_TICK_MIN_MS = 100L
 private const val SAVE_MS = 5000L
 
 data class NowPlaying(val book: Book, val n: Int, val title: String, val duration: Double)
@@ -165,7 +167,7 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
     val sentence = MutableStateFlow("")
     private var lastSubtitleAt = 0L
     val isPlaying = MutableStateFlow(false)
-    val position = MutableStateFlow(0.0)      // seconds, updated ~5x/s while playing
+    val position = MutableStateFlow(0.0)      // seconds; while playing updated at each word start (at most 1 s apart) with the screen in view
     val speed = MutableStateFlow(app.store.s.settings.speed)
     /** sleep timer: remaining ms, -1 = until end of chapter, null = off */
     val sleep = MutableStateFlow<Long?>(null)
@@ -348,7 +350,7 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
             // a ticker sleeping until the next sentence must look again
             override fun onPositionDiscontinuity(old: Player.PositionInfo, new: Player.PositionInfo, reason: Int) {
                 if (casting.value) return
-                if (tickJob?.isActive == true) { if (!uiVisible) startTicker() }
+                if (tickJob?.isActive == true) startTicker()
                 else { position.value = exo.currentPosition / 1000.0; refreshSubtitle() }
             }
             override fun onPlaybackStateChanged(state: Int) { if (!casting.value && state == Player.STATE_ENDED) onEnded() }
@@ -361,8 +363,8 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
     }
 
     /**
-     * Whether the app's screen is in view (MainActivity started). Only then does the position need updating ~5 times a
-     * second; with the screen off or another app in front the ticker wakes up only when the spoken sentence changes
+     * Whether the app's screen is in view (MainActivity started). Only then does the position need updating at each word
+     * start ([untilNextWord]); with the screen off or another app in front the ticker wakes up only when the spoken sentence changes
      * (live subtitles, big widget) and every [SAVE_MS] to save the position and listening time.
      */
     private var uiVisible = false
@@ -408,10 +410,36 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
                     saveNow(lazy = true)
                     addStat(t)
                 }
-                delay(if (uiVisible) TICK_MS
+                delay(if (uiVisible) minOf(untilNextWord(), retryIn ?: Long.MAX_VALUE, SAVE_MS - (t - lastSave)).coerceAtLeast(WORD_TICK_MIN_MS)
                       else minOf(untilNextSentence(), retryIn ?: Long.MAX_VALUE, SAVE_MS - (t - lastSave)).coerceAtLeast(TICK_MS))
             }
         }
+    }
+
+    /**
+     * Screen in view: ms until the next word starts, so the reader's highlight moves on time (it used to lag 0-200 ms),
+     * never more than 1 s of playback (times, sliders, mini player) nor 1 s of clock. No word timings (text still
+     * loading, an audiobook without text) or casting: every [TICK_MS], as before.
+     */
+    private fun untilNextWord(): Long {
+        val t = curText
+        if (t == null || t.timeline.isEmpty() || casting.value) return TICK_MS
+        val pos = position.value
+        val next = t.timeline.getOrNull(t.wordAt(pos) + 1)?.first ?: Double.MAX_VALUE
+        val sp = active.playbackParameters.speed.coerceAtLeast(0.1f)
+        // wordAt counts a word from 50 ms before its time; wake 20 ms past that so an early wake-up does not miss it
+        var media = minOf(next - 0.03 - pos, 1.0)
+        // the times on screen ("2:17", "−6:29") change at whole seconds of the position and of the time left: when the
+        // next word comes more than 0.3 s after such a change, wake for the change, so a time never shows up late by more
+        val left = (now.value?.duration ?: 0.0) - pos
+        for (b in doubleArrayOf(floor(pos) + 1 - pos, (left - floor(left)).takeIf { it > 0 } ?: 1.0)) {
+            val at = b + 0.02
+            if (at < media && media - at > 0.3 * sp) media = at
+        }
+        var wait = media * 1000 / sp
+        // skipped silence makes media time run faster than the clock: aim early across a pause and look again
+        if (exo.skipSilenceEnabled && wait > 250) wait *= 0.6
+        return wait.toLong().coerceIn(WORD_TICK_MIN_MS, 1000L)
     }
 
     /** ms of playback until the next sentence starts (the subtitle changes then), at most [SAVE_MS] */
@@ -544,6 +572,8 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
     fun skip(sec: Int) = seekTo((active.currentPosition / 1000.0 + sec).coerceIn(0.0, now.value?.duration ?: 0.0))
     fun setSpeed(v: Float) {
         speed.value = v; exo.playbackParameters = exo.playbackParameters.withSpeed(v)
+        // the ticker's wait was worked out for the old speed
+        if (uiVisible && tickJob?.isActive == true) startTicker()
         val bk = now.value?.book?.key
         if (app.store.s.settings.perBookSpeed && bk != null) app.store.settings { it.copy(bookSpeed = it.bookSpeed + (bk to v)) }
         else app.store.settings { it.copy(speed = v) }
