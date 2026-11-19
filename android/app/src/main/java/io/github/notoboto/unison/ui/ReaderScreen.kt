@@ -618,7 +618,9 @@ private fun TextMode(t: ChapterText, pos: Double, look: Look, immersive: Boolean
     // "back to current place" chip while the user scrolls away
     Box(Modifier.fillMaxSize()) {
         if (!readOnly && hasAudio && System.currentTimeMillis() < userScrollUntil && !immersive) {
-            Button(onClick = { userScrollUntil = 0; scope.launch { lazy.animateScrollToItem(itemOf(activePara)) } },
+            // the chip's own scroll is not the user's: marked programmatic, or it re-armed the 8-s pause and the chip
+            // stayed (following resumed only after a second tap, when there was nothing left to scroll)
+            Button(onClick = { userScrollUntil = 0; scope.launch { programmatic = true; try { lazy.animateScrollToItem(itemOf(activePara)) } finally { programmatic = false } } },
                 Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset + 12.dp)) { Text("↧ К текущему месту") }
         }
     }
