@@ -155,6 +155,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.navigation.NavController
 import io.github.notoboto.unison.app
 import io.github.notoboto.unison.data.ChapterText
+import io.github.notoboto.unison.data.RoleColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -193,7 +194,7 @@ fun ReaderScreen(nav: NavController, key: String, n: Int) {
         if (textFor != "${cur.book.key}:${cur.n}") text = null      // keep the old text while only re-reading the voiced version
         textFor = "${cur.book.key}:${cur.n}"
         error = null
-        runCatching { app.repo.chapterText(cur.book, cur.n) }.onSuccess { text = it }.onFailure { e -> android.util.Log.w("Reader", "chapter ${cur.book.key}/${cur.n}", e)
+        runCatching { app.repo.chapterText(cur.book, cur.n) }.onSuccess { text = it; app.store.learnRoles(cur.book.key, cur.n, it.roles) }.onFailure { e -> android.util.Log.w("Reader", "chapter ${cur.book.key}/${cur.n}", e)
             error = if (e is io.github.notoboto.unison.sources.PluginException) errorText(e) else "Глава не скачана, а интернета нет" }
     }
 
@@ -225,6 +226,15 @@ fun ReaderScreen(nav: NavController, key: String, n: Int) {
     var visibleTime by remember { mutableStateOf<Double?>(null) }
     var wordMenu by remember { mutableStateOf<WordHit?>(null) }
     val look = rememberLook(s)
+    // each speaker's colour number, fixed per character for the whole book (data/RoleColors.kt). st changes every few
+    // seconds (position, listening time), but this book's BookRoles instance only when a chapter adds to it; an array
+    // with the same numbers is reused, so writing the chapter's colours (learnRoles) rebuilds no paragraph
+    val bookRoles = np?.let { st.roleColors[it.book.key] }
+    val lastIdx = remember { arrayOf(IntArray(0)) }
+    val roleIdx = remember(text, bookRoles) {
+        val a = text?.let { RoleColors.colorsFor(bookRoles, it.roles) } ?: IntArray(0)
+        if (a.contentEquals(lastIdx[0])) lastIdx[0] else a.also { lastIdx[0] = it }
+    }
     var recapText by remember(np?.n) { mutableStateOf<String?>(null) }
     var gloss by remember { mutableStateOf<List<io.github.notoboto.unison.data.GlossaryEntry>>(emptyList()) }
     LaunchedEffect(np?.book?.key, np?.n) {
@@ -261,8 +271,8 @@ fun ReaderScreen(nav: NavController, key: String, n: Int) {
         when {
             error != null -> EmptyState("📡", error!!)
             t == null -> EmptyState("⏳", "Загружаю главу…")
-            playerMode || t.paras.size <= 1 -> PlayerMode(t, np?.book?.coverUrl, posState, look, zones, if (barH > 0.dp) barH else 250.dp, onToggleUi = { immersive = !immersive })
-            else -> TextMode(t, posState, look, immersive, if (immersive || readOnly) 0.dp else barH, zones, focusRole, { focusRole = it }, readOnly, { visibleTime = it }, hasAudio = hasAudio,
+            playerMode || t.paras.size <= 1 -> PlayerMode(t, roleIdx, np?.book?.coverUrl, posState, look, zones, if (barH > 0.dp) barH else 250.dp, onToggleUi = { immersive = !immersive })
+            else -> TextMode(t, roleIdx, posState, look, immersive, if (immersive || readOnly) 0.dp else barH, zones, focusRole, { focusRole = it }, readOnly, { visibleTime = it }, hasAudio = hasAudio,
                 onTapEmpty = { immersive = !immersive }, onSeek = { player.seekTo(it); player.play() }, onLong = { wordMenu = it },
                 marks = np?.let { st.highlights[it.book.key] }.orEmpty(), pics = pics, onPicture = { bigPic = it })
         }
@@ -515,7 +525,11 @@ private fun Modifier.litOverlay(pt: ParaText, toks: List<Tok>, look: Look, act: 
     }
 }
 
-private fun buildPara(toks: List<Tok>, colors: List<Color>, active: Int, look: Look?, focusRole: Int = -1,
+/** Text colour by role index of the chapter: the narrator (and a role the list lacks) plain, the others their book colour. */
+private fun roleColorsOf(idx: IntArray, colors: List<Color>): List<Color> =
+    List(idx.size) { i -> if (idx[i] < 0) Color.Unspecified else colors[idx[i] % colors.size] }
+
+private fun buildPara(toks: List<Tok>, roleCol: List<Color>, active: Int, look: Look?, focusRole: Int = -1,
                       marks: List<io.github.notoboto.unison.data.Highlight> = emptyList()): ParaText {
     val starts = IntArray(toks.size)
     val lit = litRange(toks, active, look?.sentence == true)
@@ -527,7 +541,7 @@ private fun buildPara(toks: List<Tok>, colors: List<Color>, active: Int, look: L
                 if (m != null) withStyle(SpanStyle(background = (HL_COLORS[m.color] ?: HL).copy(alpha = .38f))) { append(' ') } else append(' ')
             }
             starts[i] = length
-            var c = if (tk.role > 0) colors[(tk.role - 1) % colors.size] else Color.Unspecified
+            var c = roleCol.getOrElse(tk.role) { Color.Unspecified }
             if (focusRole >= 0 && tk.role != focusRole) c = (if (c == Color.Unspecified) (look?.fg ?: Color.Gray) else c).copy(alpha = 0.28f)
             val on = i in lit
             val mark = marks.firstOrNull { i in it.a..it.b }
@@ -544,11 +558,12 @@ private fun buildPara(toks: List<Tok>, colors: List<Color>, active: Int, look: L
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TextMode(t: ChapterText, posState: State<Double>, look: Look, immersive: Boolean, bottomInset: androidx.compose.ui.unit.Dp, zones: Zones, focusRole: Int, onFocus: (Int) -> Unit,
+private fun TextMode(t: ChapterText, roleIdx: IntArray, posState: State<Double>, look: Look, immersive: Boolean, bottomInset: androidx.compose.ui.unit.Dp, zones: Zones, focusRole: Int, onFocus: (Int) -> Unit,
                      readOnly: Boolean, onVisible: (Double) -> Unit, hasAudio: Boolean = true, onTapEmpty: () -> Unit, onSeek: (Double) -> Unit,
                      onLong: (WordHit) -> Unit, marks: List<io.github.notoboto.unison.data.Highlight> = emptyList(),
                      pics: Map<Int, List<Pair<String, ChapterImage>>> = emptyMap(), onPicture: (Pair<String, ChapterImage>) -> Unit = {}) {
     val colors = if (look.lightBg) roleColorsLight else roleColorsDark
+    val roleCol = remember(roleIdx, colors) { roleColorsOf(roleIdx, colors) }
     // the spoken word: changes ~3 times a second, not on every 200-ms position tick (Pair compares by equals)
     val activeState = remember(t, posState) { derivedStateOf { spokenAt(t, posState.value, -1) } }
     val (activePara, activeTok) = activeState.value
@@ -627,8 +642,8 @@ private fun TextMode(t: ChapterText, posState: State<Double>, look: Look, immers
             FlowRow(Modifier.padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 t.roles.forEachIndexed { i, r ->
                     if (i > 0) Text("● $r", Modifier.clip(RoundedCornerShape(6.dp)).clickable { onFocus(if (focusRole == i) -1 else i) }
-                        .background(if (focusRole == i) colors[(i - 1) % colors.size].copy(alpha = .18f) else Color.Transparent).padding(horizontal = 4.dp, vertical = 2.dp),
-                        fontSize = 13.sp, color = colors[(i - 1) % colors.size], fontWeight = if (focusRole == i) FontWeight.Bold else null)
+                        .background(if (focusRole == i) roleCol[i].copy(alpha = .18f) else Color.Transparent).padding(horizontal = 4.dp, vertical = 2.dp),
+                        fontSize = 13.sp, color = roleCol[i], fontWeight = if (focusRole == i) FontWeight.Bold else null)
                 }
             }
             // pictures right after the title (start of a volume)
@@ -646,7 +661,7 @@ private fun TextMode(t: ChapterText, posState: State<Double>, look: Look, immers
             val drawLit = look.hl != null
             val act = if (drawLit) -1 else actState.value
             val pm = remember(marks, t.n, pi) { marks.filter { it.n == t.n && it.p == pi } }
-            val pt = remember(t, pi, act, colors, look, focusRole, pm) { buildPara(toks, colors, act, look, focusRole, pm) }
+            val pt = remember(t, pi, act, roleCol, look, focusRole, pm) { buildPara(toks, roleCol, act, look, focusRole, pm) }
             // the gesture handler below must survive the spoken word moving on (several times a second): restarting it
             // drops a tap in progress, so it reads the current paragraph through this instead of being keyed on it
             val cur by rememberUpdatedState(pt to toks)
@@ -750,8 +765,9 @@ private fun buildParaStart(t: ChapterText, pi: Int, tok: Int): Int {
 }
 
 @Composable
-private fun PlayerMode(t: ChapterText, cover: String?, posState: State<Double>, look: Look, zones: Zones, bottomInset: androidx.compose.ui.unit.Dp, onToggleUi: () -> Unit) {
+private fun PlayerMode(t: ChapterText, roleIdx: IntArray, cover: String?, posState: State<Double>, look: Look, zones: Zones, bottomInset: androidx.compose.ui.unit.Dp, onToggleUi: () -> Unit) {
     val colors = if (LocalIsDark.current) roleColorsDark else roleColorsLight
+    val roleCol = remember(roleIdx, colors) { roleColorsOf(roleIdx, colors) }
     val spoken by remember(t, posState) { derivedStateOf { spokenAt(t, posState.value, 1) } }
     val (pi, ti) = spoken
     val para = t.paras.getOrNull(pi).orEmpty()
@@ -769,7 +785,7 @@ private fun PlayerMode(t: ChapterText, cover: String?, posState: State<Double>, 
         Spacer(Modifier.height(18.dp))
         Text(t.title, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
         Spacer(Modifier.height(6.dp))
-        Text(if (role > 0) t.roles.getOrNull(role) ?: " " else " ", color = if (role > 0) colors[(role - 1) % colors.size] else Color.Unspecified,
+        Text(if (role > 0) t.roles.getOrNull(role) ?: " " else " ", color = roleCol.getOrElse(role) { Color.Unspecified },
             fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
         Spacer(Modifier.height(10.dp))
         // only the sentence being spoken: room for four lines, a longer one scrolls along with the voice
@@ -777,7 +793,7 @@ private fun PlayerMode(t: ChapterText, cover: String?, posState: State<Double>, 
         var from = a; while (from > 0 && !sentenceEnd(para[from - 1].word)) from--
         var to = a; while (to < para.size - 1 && !sentenceEnd(para[to].word)) to++
         val sentence = if (para.isEmpty()) emptyList() else para.subList(from, (to + 1).coerceAtMost(para.size))
-        val pt = remember(t, pi, from, ti, colors, look) { buildPara(sentence, colors, ti - from, look.copy(sentence = false)) }
+        val pt = remember(t, pi, from, ti, roleCol, look) { buildPara(sentence, roleCol, ti - from, look.copy(sentence = false)) }
         val scroll = rememberScrollState()
         var lay by remember { mutableStateOf<TextLayoutResult?>(null) }
         val lineH = with(LocalDensity.current) { 28.sp.toPx() }

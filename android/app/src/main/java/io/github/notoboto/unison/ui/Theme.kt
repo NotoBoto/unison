@@ -40,9 +40,12 @@ private val Light = lightColorScheme(
     outline = Color(0xFFA8989F), outlineVariant = Color(0xFFE2D2DB),
 )
 
-/** Role colours for the reader, by theme. Index 0 = narrator (plain text). */
-val roleColorsDark = listOf(0xFF7CC0FF, 0xFFFF9F73, 0xFF7FD99A, 0xFFEC92E0, 0xFFE9C94F, 0xFF5FD6DD, 0xFFFF8AA8, 0xFFA9ACFF, 0xFFC4D96A).map { Color(it) }
-val roleColorsLight = listOf(0xFF1F6FB2, 0xFFB0471F, 0xFF2F8A4A, 0xFF9A3A8E, 0xFF8A6D00, 0xFF00828A, 0xFFC2335B, 0xFF5B5FC7, 0xFF6D7F1F).map { Color(it) }
+/** Role colours for the reader, by theme. A character's colour number (data/RoleColors.kt) picks from these; the same
+ *  number is the same hue family in both themes. Size = RoleColors.SIZE. */
+val roleColorsDark = listOf(0xFF7CC0FF, 0xFFFF9F73, 0xFF7FD99A, 0xFFEC92E0, 0xFFE9C94F, 0xFF5FD6DD, 0xFFFF8AA8, 0xFFA9ACFF, 0xFFC4D96A,
+    0xFFCDAB7A, 0xFFC79BFF, 0xFFFF7A7A).map { Color(it) }
+val roleColorsLight = listOf(0xFF1F6FB2, 0xFFB0471F, 0xFF2F8A4A, 0xFF9A3A8E, 0xFF8A6D00, 0xFF00828A, 0xFFC2335B, 0xFF5B5FC7, 0xFF6D7F1F,
+    0xFF8B5A2B, 0xFF7A3FC0, 0xFFA12A2A).map { Color(it) }
 val LocalIsDark = staticCompositionLocalOf { true }
 
 @Composable
