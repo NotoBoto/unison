@@ -217,9 +217,14 @@ fun normalizeSource(url: String): String {
     return u
 }
 
+/** First 8 hex digits of each source address's SHA-1: [Book.key] is read many times per frame, sources are few. */
+private val sourceHashes = java.util.concurrent.ConcurrentHashMap<String, String>()
+
 fun bookKey(sourceUrl: String, id: String): String {
-    val h = MessageDigest.getInstance("SHA-1").digest(sourceUrl.toByteArray()).joinToString("") { "%02x".format(it) }
-    return h.take(8) + "_" + id
+    val h = sourceHashes.getOrPut(sourceUrl) {
+        MessageDigest.getInstance("SHA-1").digest(sourceUrl.toByteArray()).joinToString("") { "%02x".format(it) }.take(8)
+    }
+    return h + "_" + id
 }
 
 /** A book from a concrete source, with its chapter list (may be empty until loaded). */
