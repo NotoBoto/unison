@@ -125,6 +125,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -475,14 +481,44 @@ val HL_COLORS = mapOf("yellow" to Color(0xFFFFD54A), "green" to Color(0xFF9BE39B
 
 private val sentenceEnd = { w: String -> w.trimEnd('»', '"', ')', '—').let { it.endsWith('.') || it.endsWith('!') || it.endsWith('?') || it.endsWith('…') } }
 
-private fun buildPara(toks: List<Tok>, colors: List<Color>, active: Int, look: Look?, focusRole: Int = -1,
-                      marks: List<io.github.notoboto.unison.data.Highlight> = emptyList()): ParaText {
-    val starts = IntArray(toks.size)
+/** Tokens lit for the spoken token [active]: the token, or its whole sentence with «Подсвечивать предложение». */
+private fun litRange(toks: List<Tok>, active: Int, sentence: Boolean): IntRange {
+    if (active < 0) return IntRange.EMPTY
     var a = active; var b = active
-    if (active >= 0 && look?.sentence == true) {
+    if (sentence) {
         while (a > 0 && !sentenceEnd(toks[a - 1].word)) a--
         while (b < toks.size - 1 && !sentenceEnd(toks[b].word)) b++
     }
+    return a..b
+}
+
+/** Paints the spoken word (or sentence) over a paragraph laid out without it: the boxes a background span would fill,
+ *  then the same text in [HL_FG] clipped to them. Reads the word in the draw phase only. */
+private fun Modifier.litOverlay(pt: ParaText, toks: List<Tok>, look: Look, act: State<Int>, measurer: TextMeasurer,
+                                layout: () -> TextLayoutResult?): Modifier = drawWithCache {
+    val lay = layout()
+    val lit = litRange(toks, act.value, look.sentence)
+    val hl = look.hl
+    if (lay == null || lit.isEmpty() || hl == null) return@drawWithCache onDrawWithContent { drawContent() }
+    // word boxes only: the spaces between lit words stay unlit, as in buildPara
+    val boxes = Path()
+    for (i in lit) { val s = pt.starts[i]; boxes.addPath(lay.getPathForRange(s, s + toks[i].word.length)) }
+    // the same text in one colour, laid out from the same input: identical line breaks and glyph positions (TextMeasurer caches it)
+    val inp = lay.layoutInput
+    val fg = measurer.measure(AnnotatedString(inp.text.text), inp.style.copy(color = HL_FG), inp.overflow, inp.softWrap,
+        inp.maxLines, constraints = inp.constraints, layoutDirection = inp.layoutDirection, density = inp.density,
+        fontFamilyResolver = inp.fontFamilyResolver)
+    onDrawWithContent {
+        drawContent()
+        drawPath(boxes, hl)
+        clipPath(boxes) { drawText(fg) }
+    }
+}
+
+private fun buildPara(toks: List<Tok>, colors: List<Color>, active: Int, look: Look?, focusRole: Int = -1,
+                      marks: List<io.github.notoboto.unison.data.Highlight> = emptyList()): ParaText {
+    val starts = IntArray(toks.size)
+    val lit = litRange(toks, active, look?.sentence == true)
     val hl = if (look == null) HL else look.hl
     val text = buildAnnotatedString {
         toks.forEachIndexed { i, tk ->
@@ -493,7 +529,7 @@ private fun buildPara(toks: List<Tok>, colors: List<Color>, active: Int, look: L
             starts[i] = length
             var c = if (tk.role > 0) colors[(tk.role - 1) % colors.size] else Color.Unspecified
             if (focusRole >= 0 && tk.role != focusRole) c = (if (c == Color.Unspecified) (look?.fg ?: Color.Gray) else c).copy(alpha = 0.28f)
-            val on = active >= 0 && i in a..b
+            val on = i in lit
             val mark = marks.firstOrNull { i in it.a..it.b }
             if (!on && mark != null) { withStyle(SpanStyle(background = (HL_COLORS[mark.color] ?: HL).copy(alpha = .38f), color = c)) { append(tk.word) }; return@forEachIndexed }
             when {
@@ -518,6 +554,7 @@ private fun TextMode(t: ChapterText, posState: State<Double>, look: Look, immers
     val (activePara, activeTok) = activeState.value
     val lazy = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val measurer = rememberTextMeasurer()
     val layouts = remember(t) { mutableStateMapOf<Int, TextLayoutResult>() }
     var userScrollUntil by remember { mutableLongStateOf(0L) }
     var programmatic by remember { mutableStateOf(false) }
@@ -604,7 +641,10 @@ private fun TextMode(t: ChapterText, posState: State<Double>, look: Look, immers
             val actState = remember(pi, activeState, readOnly) {
                 derivedStateOf { activeState.value.let { (p, k) -> if (p == pi && !readOnly) k else -1 } }
             }
-            val act = actState.value
+            // a colour highlight changes no metrics: the paragraph's text stays as it is and the spoken word is painted over it,
+            // so a new word costs a redraw, not a new AnnotatedString and a new layout. Bold + underline ("none") still rebuilds.
+            val drawLit = look.hl != null
+            val act = if (drawLit) -1 else actState.value
             val pm = remember(marks, t.n, pi) { marks.filter { it.n == t.n && it.p == pi } }
             val pt = remember(t, pi, act, colors, look, focusRole, pm) { buildPara(toks, colors, act, look, focusRole, pm) }
             // the gesture handler below must survive the spoken word moving on (several times a second): restarting it
@@ -635,7 +675,8 @@ private fun TextMode(t: ChapterText, posState: State<Double>, look: Look, immers
                                 toks.subList(a, b + 1).firstOrNull { it.t != null }?.t ?: 0.0, toks.joinToString(" ") { it.word }, toks.size - 1))
                         }
                     })
-                },
+                }
+                .then(if (drawLit) Modifier.litOverlay(pt, toks, look, actState, measurer) { layouts[pi] } else Modifier),
                 fontSize = fs.sp, lineHeight = (fs * look.lh).sp, fontFamily = look.family, color = look.fg,
                 style = MaterialTheme.typography.bodyLarge.copy(textIndent = TextIndent(firstLine = (fs * 1.2).sp)),
                 onTextLayout = { layouts[pi] = it })
