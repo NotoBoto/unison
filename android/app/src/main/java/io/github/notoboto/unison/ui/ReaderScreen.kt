@@ -108,6 +108,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -164,7 +165,7 @@ fun ReaderScreen(nav: NavController, key: String, n: Int) {
     val st by app.store.state.collectAsState()
     val now by player.now.collectAsState()
     val playing by player.isPlaying.collectAsState()
-    val pos by player.position.collectAsState()
+    val posState = player.position.collectAsState()
     val speed by player.speed.collectAsState()
     val sleep by player.sleep.collectAsState()
     val s = st.settings
@@ -252,8 +253,8 @@ fun ReaderScreen(nav: NavController, key: String, n: Int) {
         when {
             error != null -> EmptyState("📡", error!!)
             t == null -> EmptyState("⏳", "Загружаю главу…")
-            playerMode || t.paras.size <= 1 -> PlayerMode(t, np?.book?.coverUrl, pos, look, zones, if (barH > 0.dp) barH else 250.dp, onToggleUi = { immersive = !immersive })
-            else -> TextMode(t, pos, look, immersive, if (immersive || readOnly) 0.dp else barH, zones, focusRole, { focusRole = it }, readOnly, { visibleTime = it }, hasAudio = hasAudio,
+            playerMode || t.paras.size <= 1 -> PlayerMode(t, np?.book?.coverUrl, posState, look, zones, if (barH > 0.dp) barH else 250.dp, onToggleUi = { immersive = !immersive })
+            else -> TextMode(t, posState, look, immersive, if (immersive || readOnly) 0.dp else barH, zones, focusRole, { focusRole = it }, readOnly, { visibleTime = it }, hasAudio = hasAudio,
                 onTapEmpty = { immersive = !immersive }, onSeek = { player.seekTo(it); player.play() }, onLong = { wordMenu = it },
                 marks = np?.let { st.highlights[it.book.key] }.orEmpty(), pics = pics, onPicture = { bigPic = it })
         }
@@ -295,7 +296,8 @@ fun ReaderScreen(nav: NavController, key: String, n: Int) {
                                 bmMenu = false
                                 val tt = text
                                 if (cur != null && tt != null) {
-                                    app.store.addBookmark(cur.book.key, Bookmark(cur.n, pos, sentenceAt(tt, pos)))
+                                    val p = posState.value
+                                    app.store.addBookmark(cur.book.key, Bookmark(cur.n, p, sentenceAt(tt, p)))
                                     android.widget.Toast.makeText(ctx, "Закладка добавлена", android.widget.Toast.LENGTH_SHORT).show()
                                 }
                             })
@@ -344,11 +346,11 @@ fun ReaderScreen(nav: NavController, key: String, n: Int) {
                 })
         }
 
-        if (readOnly && !immersive && np?.let { voicedTag != null || player.hasAudio(it.book, it.n) } == true) androidx.compose.material3.ExtendedFloatingActionButton(onClick = { readOnlyPref = false; visibleTime?.let { player.seekTo(it) }; player.play() },
+        if (readOnly && !immersive && hasAudio) androidx.compose.material3.ExtendedFloatingActionButton(onClick = { readOnlyPref = false; visibleTime?.let { player.seekTo(it) }; player.play() },
             icon = { Icon(Icons.Filled.PlayArrow, null) }, text = { Text("Слушать отсюда") },
             modifier = Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(20.dp))
         // nothing to play yet (a text chapter that is not voiced): chapter navigation and «Озвучить» instead of the player
-        val audio = np?.let { voicedTag != null || player.hasAudio(it.book, it.n) } ?: false
+        val audio = hasAudio
         AnimatedVisibility(!immersive && !audio && np != null, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut(), modifier = Modifier.align(Alignment.BottomCenter)) {
             val cur = np ?: return@AnimatedVisibility
             val jobs by app.downloads.states.collectAsState()
@@ -381,14 +383,14 @@ fun ReaderScreen(nav: NavController, key: String, n: Int) {
                 Column(Modifier.navigationBarsPadding().padding(horizontal = 16.dp, vertical = 6.dp)) {
                     val dur = (np?.duration ?: 1.0).takeIf { it > 0 } ?: 1.0   // 0 until a plugin chapter's text is known: avoid NaN in the slider
                     var drag by remember { mutableStateOf<Float?>(null) }
-                    Slider(value = drag ?: (pos / dur).toFloat().coerceIn(0f, 1f), onValueChange = { drag = it },
+                    Slider(value = drag ?: (posState.value / dur).toFloat().coerceIn(0f, 1f), onValueChange = { drag = it },
                         onValueChangeFinished = { drag?.let { player.seekTo(it * dur) }; drag = null })
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(fmt(drag?.let { it * dur } ?: pos), fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(fmt(drag?.let { it * dur } ?: posState.value), fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.weight(1f))
                         sleep?.let { Text(if (it < 0) "до конца главы" else "сон ${fmt(it / 1000.0)}", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.primary) }
                         Spacer(Modifier.weight(1f))
-                        Text("−" + fmt(dur - pos), fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("−" + fmt(dur - posState.value), fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { player.neighbour(-1)?.let { m -> np?.let { player.open(it.book, m, playing) } } }, enabled = player.neighbour(-1) != null) {
@@ -494,12 +496,12 @@ private fun buildPara(toks: List<Tok>, colors: List<Color>, active: Int, look: L
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TextMode(t: ChapterText, pos: Double, look: Look, immersive: Boolean, bottomInset: androidx.compose.ui.unit.Dp, zones: Zones, focusRole: Int, onFocus: (Int) -> Unit,
+private fun TextMode(t: ChapterText, posState: State<Double>, look: Look, immersive: Boolean, bottomInset: androidx.compose.ui.unit.Dp, zones: Zones, focusRole: Int, onFocus: (Int) -> Unit,
                      readOnly: Boolean, onVisible: (Double) -> Unit, hasAudio: Boolean = true, onTapEmpty: () -> Unit, onSeek: (Double) -> Unit,
                      onLong: (WordHit) -> Unit, marks: List<io.github.notoboto.unison.data.Highlight> = emptyList(),
                      pics: Map<Int, List<Pair<String, ChapterImage>>> = emptyMap(), onPicture: (Pair<String, ChapterImage>) -> Unit = {}) {
     val colors = if (look.lightBg) roleColorsLight else roleColorsDark
-    val wi = t.wordAt(pos)
+    val wi = t.wordAt(posState.value)
     val activePara = if (wi >= 0) t.timeline[wi].second else -1
     val activeTok = if (wi >= 0) t.timeline[wi].third else -1
     val lazy = rememberLazyListState()
@@ -675,9 +677,9 @@ private fun buildParaStart(t: ChapterText, pi: Int, tok: Int): Int {
 }
 
 @Composable
-private fun PlayerMode(t: ChapterText, cover: String?, pos: Double, look: Look, zones: Zones, bottomInset: androidx.compose.ui.unit.Dp, onToggleUi: () -> Unit) {
+private fun PlayerMode(t: ChapterText, cover: String?, posState: State<Double>, look: Look, zones: Zones, bottomInset: androidx.compose.ui.unit.Dp, onToggleUi: () -> Unit) {
     val colors = if (LocalIsDark.current) roleColorsDark else roleColorsLight
-    val wi = t.wordAt(pos)
+    val wi = t.wordAt(posState.value)
     val pi = if (wi >= 0) t.timeline[wi].second else 1
     val ti = if (wi >= 0) t.timeline[wi].third else -1
     val para = t.paras.getOrNull(pi).orEmpty()
