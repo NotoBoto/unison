@@ -112,6 +112,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -501,14 +502,22 @@ private fun TextMode(t: ChapterText, posState: State<Double>, look: Look, immers
                      onLong: (WordHit) -> Unit, marks: List<io.github.notoboto.unison.data.Highlight> = emptyList(),
                      pics: Map<Int, List<Pair<String, ChapterImage>>> = emptyMap(), onPicture: (Pair<String, ChapterImage>) -> Unit = {}) {
     val colors = if (look.lightBg) roleColorsLight else roleColorsDark
-    val wi = t.wordAt(posState.value)
-    val activePara = if (wi >= 0) t.timeline[wi].second else -1
-    val activeTok = if (wi >= 0) t.timeline[wi].third else -1
+    // the spoken word: changes ~3 times a second, not on every 200-ms position tick (Pair compares by equals)
+    val activeState = remember(t, posState) { derivedStateOf { spokenAt(t, posState.value, -1) } }
+    val (activePara, activeTok) = activeState.value
     val lazy = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val layouts = remember(t) { mutableStateMapOf<Int, TextLayoutResult>() }
     var userScrollUntil by remember { mutableLongStateOf(0L) }
     var programmatic by remember { mutableStateOf(false) }
+    // the chip hides 8 s after a manual scroll began, playing or paused. It used to rely on the screen recomposing on
+    // every position tick; now one timer moves this clock to the deadline (a new scroll restarts it, the chip's tap clears it)
+    var chipClock by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(userScrollUntil) {
+        val d = userScrollUntil - System.currentTimeMillis()
+        if (d > 0) delay(d)
+        chipClock = userScrollUntil
+    }
     val viewport = with(LocalDensity.current) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val insetPx = with(LocalDensity.current) { bottomInset.toPx() }
     val appSet = LocalContext.current.app().store.state.collectAsState().value.settings
@@ -519,7 +528,9 @@ private fun TextMode(t: ChapterText, posState: State<Double>, look: Look, immers
     val headerItems = 2   // title + legend
     fun itemOf(pi: Int) = if (pi <= 0) 0 else pi - 1 + headerItems
     // in "read only" mode the screen edges turn pages instead of skipping audio
-    val activeZones = if (readOnly) Zones("single", 25) { dir -> scope.launch { lazy.glideBy(dir * viewport * 0.82f) } } else zones
+    val activeZones = remember(readOnly, zones, viewport) {
+        if (readOnly) Zones("single", 25) { dir -> scope.launch { lazy.glideBy(dir * viewport * 0.82f) } } else zones
+    }
 
     LaunchedEffect(lazy.isScrollInProgress) { if (lazy.isScrollInProgress && !programmatic) userScrollUntil = System.currentTimeMillis() + 8000 }
     LaunchedEffect(lazy.firstVisibleItemIndex) {
@@ -578,8 +589,12 @@ private fun TextMode(t: ChapterText, posState: State<Double>, look: Look, immers
         }
         itemsIndexed(t.paras.drop(1)) { idx, toks ->
             val pi = idx + 1
-            val act = if (pi == activePara && !readOnly) activeTok else -1
-            val pm = marks.filter { it.n == t.n && it.p == pi }
+            // read here, not in TextMode: only the paragraph being spoken (and the one just left) recomposes when the word moves on
+            val actState = remember(pi, activeState, readOnly) {
+                derivedStateOf { activeState.value.let { (p, k) -> if (p == pi && !readOnly) k else -1 } }
+            }
+            val act = actState.value
+            val pm = remember(marks, t.n, pi) { marks.filter { it.n == t.n && it.p == pi } }
             val pt = remember(t, pi, act, colors, look, focusRole, pm) { buildPara(toks, colors, act, look, focusRole, pm) }
             // the gesture handler below must survive the spoken word moving on (several times a second): restarting it
             // drops a tap in progress, so it reads the current paragraph through this instead of being keyed on it
@@ -619,10 +634,10 @@ private fun TextMode(t: ChapterText, posState: State<Double>, look: Look, immers
     }
     // "back to current place" chip while the user scrolls away
     Box(Modifier.fillMaxSize()) {
-        if (!readOnly && hasAudio && System.currentTimeMillis() < userScrollUntil && !immersive) {
+        if (!readOnly && hasAudio && userScrollUntil > chipClock && !immersive) {
             // the chip's own scroll is not the user's: marked programmatic, or it re-armed the 8-s pause and the chip
             // stayed (following resumed only after a second tap, when there was nothing left to scroll)
-            Button(onClick = { userScrollUntil = 0; scope.launch { programmatic = true; try { lazy.animateScrollToItem(itemOf(activePara)) } finally { programmatic = false } } },
+            Button(onClick = { userScrollUntil = 0; scope.launch { programmatic = true; try { lazy.animateScrollToItem(itemOf(activeState.value.first)) } finally { programmatic = false } } },
                 Modifier.align(Alignment.BottomCenter).padding(bottom = bottomInset + 12.dp)) { Text("↧ К текущему месту") }
         }
     }
@@ -670,6 +685,12 @@ private fun PictureViewer(p: Pair<String, ChapterImage>, onClose: () -> Unit) {
     }
 }
 
+/** The spoken word at [pos] as (paragraph, token); [noPara] when nothing is spoken yet. */
+private fun spokenAt(t: ChapterText, pos: Double, noPara: Int): Pair<Int, Int> {
+    val wi = t.wordAt(pos)
+    return if (wi >= 0) t.timeline[wi].second to t.timeline[wi].third else noPara to -1
+}
+
 private fun buildParaStart(t: ChapterText, pi: Int, tok: Int): Int {
     var o = 0
     t.paras[pi].forEachIndexed { i, tk -> if (i == tok) return o; o += tk.word.length + 1 }
@@ -679,9 +700,8 @@ private fun buildParaStart(t: ChapterText, pi: Int, tok: Int): Int {
 @Composable
 private fun PlayerMode(t: ChapterText, cover: String?, posState: State<Double>, look: Look, zones: Zones, bottomInset: androidx.compose.ui.unit.Dp, onToggleUi: () -> Unit) {
     val colors = if (LocalIsDark.current) roleColorsDark else roleColorsLight
-    val wi = t.wordAt(posState.value)
-    val pi = if (wi >= 0) t.timeline[wi].second else 1
-    val ti = if (wi >= 0) t.timeline[wi].third else -1
+    val spoken by remember(t, posState) { derivedStateOf { spokenAt(t, posState.value, 1) } }
+    val (pi, ti) = spoken
     val para = t.paras.getOrNull(pi).orEmpty()
     val role = para.getOrNull(ti.coerceAtLeast(0))?.role ?: 0
     // the whole screen takes the tap, padding included: with the panels hidden the lower part is empty space to tap on
