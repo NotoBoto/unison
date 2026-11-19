@@ -114,6 +114,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -384,14 +385,24 @@ fun ReaderScreen(nav: NavController, key: String, n: Int) {
                 Column(Modifier.navigationBarsPadding().padding(horizontal = 16.dp, vertical = 6.dp)) {
                     val dur = (np?.duration ?: 1.0).takeIf { it > 0 } ?: 1.0   // 0 until a plugin chapter's text is known: avoid NaN in the slider
                     var drag by remember { mutableStateOf<Float?>(null) }
-                    Slider(value = drag ?: (posState.value / dur).toFloat().coerceIn(0f, 1f), onValueChange = { drag = it },
-                        onValueChangeFinished = { drag?.let { player.seekTo(it * dur) }; drag = null })
+                    // on a long chapter the thumb moves by a fraction of a pixel per 200-ms tick: the slider and the times
+                    // get a new value only when what they show changes (a pixel of the track, a second)
+                    var trackPx by remember { mutableIntStateOf(0) }
+                    val frac by remember(posState, dur) { derivedStateOf {
+                        val f = (posState.value / dur).toFloat().coerceIn(0f, 1f)
+                        if (trackPx > 0) (f * trackPx).roundToInt() / trackPx.toFloat() else f
+                    } }
+                    val elapsed by remember(posState) { derivedStateOf { fmt(posState.value) } }
+                    val left by remember(posState, dur) { derivedStateOf { "−" + fmt(dur - posState.value) } }
+                    Slider(value = drag ?: frac, onValueChange = { drag = it },
+                        onValueChangeFinished = { drag?.let { player.seekTo(it * dur) }; drag = null },
+                        modifier = Modifier.onSizeChanged { trackPx = it.width })
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(fmt(drag?.let { it * dur } ?: posState.value), fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(drag?.let { fmt(it * dur) } ?: elapsed, fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.weight(1f))
                         sleep?.let { Text(if (it < 0) "до конца главы" else "сон ${fmt(it / 1000.0)}", fontSize = 12.5.sp, color = MaterialTheme.colorScheme.primary) }
                         Spacer(Modifier.weight(1f))
-                        Text("−" + fmt(dur - posState.value), fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(left, fontSize = 12.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { player.neighbour(-1)?.let { m -> np?.let { player.open(it.book, m, playing) } } }, enabled = player.neighbour(-1) != null) {
