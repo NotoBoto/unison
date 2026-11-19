@@ -228,7 +228,8 @@ fun SettingsScreen(nav: NavController, section: String? = null) {
                 PickRow("Перемотка назад", s.skipBack, listOf(5, 10, 15, 30, 60).map { it to "$it с" }) { v -> set { it.copy(skipBack = v) } }
                 PickRow("Перемотка вперёд", s.skipForward, listOf(5, 10, 15, 30, 60).map { it to "$it с" }) { v -> set { it.copy(skipForward = v) } }
                 SwitchRow("Пропускать паузы", "Длинная тишина между фразами сокращается", s.skipSilence) { v -> set { it.copy(skipSilence = v) } }
-                PickRow("Усиление голоса", s.voiceBoost, listOf(0 to "Выключено", 3 to "+3 дБ", 6 to "+6 дБ", 9 to "+9 дБ", 12 to "+12 дБ")) { v -> set { it.copy(voiceBoost = v) } }
+                PickRow("Усиление голоса", s.voiceBoost, listOf(0 to "Выключено", 3 to "+3 дБ", 6 to "+6 дБ", 9 to "+9 дБ", 12 to "+12 дБ",
+                    15 to "+15 дБ", 18 to "+18 дБ", 21 to "+21 дБ", 24 to "+24 дБ")) { v -> set { it.copy(voiceBoost = v) } }
                 PickRow("Музыка из других приложений", s.otherAudio, listOf("pause" to "Ставить на паузу", "duck" to "Приглушать, пока звучит книга",
                     "mix" to "Не трогать — звучит вместе с книгой")) { v -> set { it.copy(otherAudio = v) } }
                 if (s.otherAudio == "mix") PickRow("Музыка тише книги", s.mixBalance, listOf(0 to "Нет, одинаково", 1 to "На 1 деление громкости",

@@ -100,6 +100,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
     override fun onStart() {
         super.onStart()
+        app().player.setUiVisible(true)
         val s = app().store.s.settings
         if (s.hideInRecents) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE) else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         if (s.appLock && (backgroundAt == 0L || System.currentTimeMillis() - backgroundAt >= s.lockAfterMin * 60_000L)) { locked.value = true; unlock() }
@@ -159,7 +160,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         }
     }
 
-    override fun onStop() { backgroundAt = System.currentTimeMillis(); super.onStop(); app().player.saveNow(); app().store.flush() }
+    override fun onStop() { backgroundAt = System.currentTimeMillis(); super.onStop(); app().player.setUiVisible(false); app().player.saveNow(); app().store.flush() }
 
     companion object {
         val openPlayerRequest = kotlinx.coroutines.flow.MutableStateFlow(false)
@@ -310,13 +311,15 @@ private fun MiniPlayer(nav: NavHostController) {
     val app = androidx.compose.ui.platform.LocalContext.current.app()
     val now by app.player.now.collectAsState()
     val playing by app.player.isPlaying.collectAsState()
-    val pos by app.player.position.collectAsState()
+    // read only inside the progress bar's draw lambda: the position (5 updates a second) redraws the 2-dp bar
+    // instead of recomposing the whole mini player
+    val posState = app.player.position.collectAsState()
     val st by app.store.state.collectAsState()      // a chapter that gets voiced brings the mini player back
     // only when there is something to play: not for a text chapter that is not voiced yet
     AnimatedVisibility(now?.let { st.downloaded[it.book.key]?.containsKey(it.n) == true || app.player.hasAudio(it.book, it.n) } == true) {
         val np = now ?: return@AnimatedVisibility
         Column(Modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
-            LinearProgressIndicator(progress = { if (np.duration > 0) (pos / np.duration).toFloat().coerceIn(0f, 1f) else 0f }, Modifier.fillMaxWidth().height(2.dp),
+            LinearProgressIndicator(progress = { if (np.duration > 0) (posState.value / np.duration).toFloat().coerceIn(0f, 1f) else 0f }, Modifier.fillMaxWidth().height(2.dp),
                 trackColor = MaterialTheme.colorScheme.surfaceContainerHigh)
             // tap = open the reader, long press = quick controls
             var menu by remember { mutableStateOf(false) }

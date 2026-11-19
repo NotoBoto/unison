@@ -28,6 +28,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -52,10 +55,14 @@ class PlaybackService : MediaLibraryService() {
     }
     override fun onDestroy() {
         (application as UnisonApp).player.saveNow()
+        runCatching { (application as UnisonApp).store.flush() }    // the position may only be held for a lazy write
         session?.release(); session = null
         super.onDestroy()
     }
 }
+
+private const val TICK_MS = 200L
+private const val SAVE_MS = 5000L
 
 data class NowPlaying(val book: Book, val n: Int, val title: String, val duration: Double)
 
@@ -72,6 +79,8 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
         .setAudioAttributes(audioAttrs, app.store.s.settings.otherAudio == "pause")
         .setHandleAudioBecomingNoisy(true)
         .setSeekBackIncrementMs(15_000).setSeekForwardIncrementMs(15_000)
+        // the playback thread sleeps until the audio renderer can take more data instead of waking every 10 ms
+        .experimentalSetDynamicSchedulingEnabled(true)
         .build()
     private var controller: MediaController? = null
     var session: MediaSession? = null
@@ -87,7 +96,7 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
         runCatching {
             val c = androidx.media3.cast.CastPlayer(com.google.android.gms.cast.framework.CastContext.getSharedInstance(ctx))
             c.addListener(object : Player.Listener {
-                override fun onIsPlayingChanged(playing: Boolean) { if (casting.value) { isPlaying.value = playing; if (playing) startTicker() } }
+                override fun onIsPlayingChanged(playing: Boolean) { if (casting.value) { isPlaying.value = playing; syncShake(); if (playing) startTicker() } }
                 override fun onPlaybackStateChanged(state: Int) { if (casting.value && state == Player.STATE_ENDED) onEnded() }
             })
             c.setSessionAvailabilityListener(object : androidx.media3.cast.SessionAvailabilityListener {
@@ -118,6 +127,7 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
         session?.player = sessionPlayer
         if (pos > 0) exo.seekTo(pos)
         isPlaying.value = exo.isPlaying
+        if (!exo.isPlaying) stopTicker() else startTicker()
     }
 
     val now = MutableStateFlow<NowPlaying?>(null)
@@ -279,10 +289,17 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
         exo.playbackParameters = exo.playbackParameters.withSpeed(speed.value)
         restoreVolume()                    // volume left lowered by a mix session the app did not get to finish
         watchCalls()
-        scope.launch { app.store.state.collect { applySound(); applyOtherAudio() } }
+        // the big widget skips sentence updates while the screen is off: catch up when it comes on
+        runCatching {
+            androidx.core.content.ContextCompat.registerReceiver(ctx, object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context, i: Intent) = Widgets.onScreenOn(ctx)
+            }, android.content.IntentFilter(Intent.ACTION_SCREEN_ON), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+        }
+        // only when the settings change: the state also changes every few seconds while playing (position, statistics)
+        scope.launch { app.store.state.map { it.settings }.distinctUntilChanged().collect { applySound(); applyOtherAudio() } }
         // the open chapter of an imported book was text-only; once its voicing finishes, load the audio right away
         scope.launch {
-            app.store.state.collect { st ->
+            app.store.state.distinctUntilChanged { a, b -> a.downloaded === b.downloaded }.collect { st ->
                 val np = now.value ?: return@collect
                 if (!io.github.notoboto.unison.data.isTextSource(np.book.source.url) || exo.mediaItemCount > 0 || casting.value) return@collect
                 if (st.downloaded[np.book.key]?.containsKey(np.n) != true) return@collect
@@ -292,10 +309,18 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
         exo.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying.value = playing
+                syncShake()
                 Widgets.update(ctx)
                 if (!playing || !casting.value) onOwnPlaying(playing)
                 if (casting.value) return
-                if (playing) startTicker() else { saveNow(); position.value = exo.currentPosition / 1000.0; pausedAt = System.currentTimeMillis() }
+                if (playing) startTicker() else { stopTicker(); saveNow(); position.value = exo.currentPosition / 1000.0; pausedAt = System.currentTimeMillis() }
+            }
+            // a seek from the notification, lock screen, headset or car: the paused player has no ticker to notice it, and
+            // a ticker sleeping until the next sentence must look again
+            override fun onPositionDiscontinuity(old: Player.PositionInfo, new: Player.PositionInfo, reason: Int) {
+                if (casting.value) return
+                if (tickJob?.isActive == true) { if (!uiVisible) startTicker() }
+                else { position.value = exo.currentPosition / 1000.0; refreshSubtitle() }
             }
             override fun onPlaybackStateChanged(state: Int) { if (!casting.value && state == Player.STATE_ENDED) onEnded() }
         })
@@ -306,45 +331,103 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
         }
     }
 
+    /**
+     * Whether the app's screen is in view (MainActivity started). Only then does the position need updating ~5 times a
+     * second; with the screen off or another app in front the ticker wakes up only when the spoken sentence changes
+     * (live subtitles, big widget) and every [SAVE_MS] to save the position and listening time.
+     */
+    private var uiVisible = false
+    fun setUiVisible(v: Boolean) {
+        if (uiVisible == v) return
+        uiVisible = v
+        if (v) { position.value = active.currentPosition / 1000.0; if (tickJob?.isActive == true) startTicker() }
+    }
+
+    /** start of listening time not yet added to the statistics (0 = not playing) */
+    private var statFrom = 0L
+    private fun addStat(t: Long) {
+        if (statFrom > 0) now.value?.let { app.store.addListened(it.book.key, t - statFrom) }
+        statFrom = t
+    }
+
+    /** Paused phone playback: nothing moves, so no ticking (it used to go on 5 times a second until the app was closed,
+     *  counting the paused time as listened). Seeks are caught by onPositionDiscontinuity / [seekTo]. */
+    private fun stopTicker() {
+        if (tickJob?.isActive == true) { addStat(System.currentTimeMillis()); statFrom = 0 }
+        tickJob?.cancel(); tickJob = null
+    }
+
+    private var subtitleJob: Job? = null
+    /** one-off subtitle update for a paused player (seek, a chapter opened without playing) */
+    private fun refreshSubtitle() {
+        if (tickJob?.isActive == true) return
+        subtitleJob?.cancel()
+        subtitleJob = scope.launch { while (isActive) { delay(updateSubtitle() ?: break) } }
+    }
+
     private fun startTicker() {
-        tickJob?.cancel()
+        tickJob?.cancel(); subtitleJob?.cancel()
         tickJob = scope.launch {
-            var k = 0
-            var lastStat = System.currentTimeMillis()
+            var lastSave = System.currentTimeMillis()
+            if (statFrom == 0L) statFrom = lastSave
             while (isActive) {
                 position.value = active.currentPosition / 1000.0
-                updateSubtitle()
-                if (++k % 25 == 0) {
-                    saveNow()
-                    val t = System.currentTimeMillis()
-                    now.value?.let { app.store.addListened(it.book.key, t - lastStat) }
-                    lastStat = t
+                val retryIn = updateSubtitle()
+                val t = System.currentTimeMillis()
+                if (t - lastSave >= SAVE_MS) {
+                    lastSave = t
+                    saveNow(lazy = true)
+                    addStat(t)
                 }
-                delay(200)
+                delay(if (uiVisible) TICK_MS
+                      else minOf(untilNextSentence(), retryIn ?: Long.MAX_VALUE, SAVE_MS - (t - lastSave)).coerceAtLeast(TICK_MS))
             }
         }
     }
 
+    /** ms of playback until the next sentence starts (the subtitle changes then), at most [SAVE_MS] */
+    private fun untilNextSentence(): Long {
+        val t = curText ?: return SAVE_MS
+        val pos = position.value
+        val wi = t.wordAt(pos)
+        val next: Double = if (wi < 0) t.timeline.firstOrNull()?.first ?: return SAVE_MS else {
+            val (_, pi, ti) = t.timeline[wi]
+            val para = t.paras[pi]
+            var b = ti
+            while (b < para.size - 1 && !io.github.notoboto.unison.ui.sentenceEnds(para[b].word)) b++
+            var k = wi + 1
+            while (k < t.timeline.size && t.timeline[k].second == pi && t.timeline[k].third <= b) k++
+            t.timeline.getOrNull(k)?.first ?: return SAVE_MS
+        }
+        val sp = active.playbackParameters.speed.coerceAtLeast(0.1f)
+        // wordAt counts a word from 50 ms before its time. Skipped silence makes media time run faster than the clock:
+        // aim early then and look again (the remaining wait shrinks each time).
+        val wait = ((next - 0.05 - pos) * 1000 / sp * (if (exo.skipSilenceEnabled) 0.6 else 1.0)).toLong()
+        return wait.coerceIn(TICK_MS, SAVE_MS)
+    }
+
     /** Live subtitles: the sentence being spoken goes into the notification ("artist" line) and the big widget. */
-    private fun updateSubtitle() {
+    /** Returns in how many ms to look again when the throttle held a change back, else null. */
+    private fun updateSubtitle(): Long? {
         val t = curText
         val s = if (t == null) "" else io.github.notoboto.unison.ui.sentenceAt(t, position.value)
         val changed = s != sentence.value
         sentence.value = s
         val line = s.take(160).takeIf { it.isNotBlank() && app.store.s.settings.liveSubtitles && !casting.value }
-        if (line == sessionPlayer.line && !changed) return
+        if (line == sessionPlayer.line && !changed) return null
         // throttled so the notification is not rebuilt several times a second; a skipped change is picked up on a later tick
         val now0 = System.currentTimeMillis()
-        if (line != null && now0 - lastSubtitleAt < 1200) return
+        if (line != null && now0 - lastSubtitleAt < 1200) return 1200 - (now0 - lastSubtitleAt)
         lastSubtitleAt = now0
         sessionPlayer.setLine(line)
-        Widgets.update(ctx)
+        Widgets.update(ctx, sentenceOnly = true)
+        return null
     }
 
-    fun saveNow() {
+    fun saveNow(lazy: Boolean = false) {
         val np = now.value ?: return
         val p = active.currentPosition / 1000.0
-        if (active.mediaItemCount > 0) app.store.setPos(np.book.key, np.n, p, np.duration)
+        if (active.mediaItemCount > 0) app.store.setPos(np.book.key, np.n, p, np.duration, lazy)
     }
 
     /** Build the media item for a chapter and make it "current" (start position in seconds). Shared with Android Auto. */
@@ -359,7 +442,7 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
         now.value = NowPlaying(b, n, ch.title, ch.duration)
         applyBookSpeed(b.key)
         curText = null; sentence.value = ""; sessionPlayer.setLine(null)
-        scope.launch { curText = runCatching { app.repo.chapterText(b, n) }.getOrNull() }
+        scope.launch { curText = runCatching { app.repo.chapterText(b, n) }.getOrNull(); refreshSubtitle() }
         position.value = start
         app.store.opened(b.key, n)
         app.downloads.autoAhead(b, n)
@@ -424,11 +507,11 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
     fun close() {
         saveNow(); active.pause()
         if (!casting.value) { exo.stop(); exo.clearMediaItems() }
-        tickJob?.cancel(); cancelSleep()
+        stopTicker(); cancelSleep()
         now.value = null; curText = null; sentence.value = ""; sessionPlayer.setLine(null)
         Widgets.update(ctx)
     }
-    fun seekTo(sec: Double) { active.seekTo((sec * 1000).toLong()); position.value = sec }
+    fun seekTo(sec: Double) { active.seekTo((sec * 1000).toLong()); position.value = sec; refreshSubtitle() }
     fun skip(sec: Int) = seekTo((active.currentPosition / 1000.0 + sec).coerceIn(0.0, now.value?.duration ?: 0.0))
     fun setSpeed(v: Float) {
         speed.value = v; exo.playbackParameters = exo.playbackParameters.withSpeed(v)
@@ -457,10 +540,12 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
     // ---------- sleep timer ----------
     private var shake: SensorEventListener? = null
     fun startSleep(ms: Long) {
-        sleepJob?.cancel(); sleep.value = ms; listenShake(ms)
+        sleepJob?.cancel(); sleep.value = ms; shakeMs = ms; stopShake(); syncShake()
         if (ms < 0) return
         sleepJob = scope.launch {
             while (isActive && (sleep.value ?: 0) > 0) {
+                // paused: the timer stands still, so wait for playback instead of looking every second
+                if (!isPlaying.value) isPlaying.first { it }
                 delay(1000); if (exo.isPlaying) sleep.value = (sleep.value ?: 0) - 1000
                 val left = sleep.value ?: 0
                 if (left in 1..10_000) exo.volume = left / 10_000f       // fade out over the last 10 s
@@ -468,7 +553,15 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
             if (isActive) { exo.pause(); exo.volume = 1f; cancelSleep() }
         }
     }
-    fun cancelSleep() { sleepJob?.cancel(); sleep.value = null; exo.volume = 1f; stopShake() }
+    fun cancelSleep() { sleepJob?.cancel(); sleep.value = null; shakeMs = 0; exo.volume = 1f; stopShake() }
+
+    /** The accelerometer runs only while a shake can extend the timer: a minutes timer during playback.
+     *  «Until end of chapter» (a shake never did anything there) and a paused player leave it off. */
+    private var shakeMs = 0L
+    private fun syncShake() {
+        val want = shakeMs > 0 && (sleep.value ?: 0) > 0 && isPlaying.value
+        if (want && shake == null) listenShake(shakeMs) else if (!want) stopShake()
+    }
 
     private fun listenShake(ms: Long) {
         stopShake()

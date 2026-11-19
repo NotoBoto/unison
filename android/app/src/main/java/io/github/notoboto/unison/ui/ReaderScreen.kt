@@ -970,10 +970,13 @@ fun BookSearchScreen(nav: NavController, key: String) {
 }
 
 /** The sentence being spoken at [pos] (used as the bookmark quote). */
+/** Whether a word ends a sentence (as the live subtitles split them). */
+fun sentenceEnds(w: String): Boolean = w.trimEnd('»', '"', ')').let { it.endsWith('.') || it.endsWith('!') || it.endsWith('?') || it.endsWith('…') }
+
 fun sentenceAt(t: ChapterText, pos: Double): String {
     val wi = t.wordAt(pos); if (wi < 0) return t.title
     val (_, pi, ti) = t.timeline[wi]; val para = t.paras[pi]
-    val ends = { w: String -> w.trimEnd('»', '"', ')').let { it.endsWith('.') || it.endsWith('!') || it.endsWith('?') || it.endsWith('…') } }
+    val ends = ::sentenceEnds
     var a = ti; while (a > 0 && !ends(para[a - 1].word)) a--
     var b = ti; while (b < para.size - 1 && !ends(para[b].word)) b++
     return para.subList(a, b + 1).joinToString(" ") { it.word }.take(300)

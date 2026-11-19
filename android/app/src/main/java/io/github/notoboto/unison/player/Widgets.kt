@@ -52,11 +52,34 @@ object Widgets {
     private fun pi(ctx: Context, action: String, code: Int) = PendingIntent.getBroadcast(ctx, code,
         Intent(ctx, PlayerWidget::class.java).setAction(action), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
-    fun update(ctx: Context) {
+    /** a sentence change skipped while the screen was off; [onScreenOn] brings the big widget up to date */
+    @Volatile private var stale = false
+
+    /**
+     * [sentenceOnly]: only the spoken sentence changed (several times a minute while playing). Only the big widget
+     * shows it, and the Quick Settings tile does not (asking the system to bind the tile each time cost a wake-up),
+     * and with the screen off nobody sees a widget: it is redrawn once the screen comes on.
+     */
+    fun update(ctx: Context, sentenceOnly: Boolean = false) {
         val mgr = AppWidgetManager.getInstance(ctx)
+        if (sentenceOnly) {
+            val ids = mgr.getAppWidgetIds(ComponentName(ctx, PlayerWidgetBig::class.java))
+            if (ids.isEmpty()) return
+            if (ctx.getSystemService(android.os.PowerManager::class.java)?.isInteractive == false) { stale = true; return }
+            render(ctx, mgr, ids, R.layout.widget_player_big)
+            return
+        }
+        stale = false
         render(ctx, mgr, mgr.getAppWidgetIds(ComponentName(ctx, PlayerWidget::class.java)), R.layout.widget_player)
         render(ctx, mgr, mgr.getAppWidgetIds(ComponentName(ctx, PlayerWidgetBig::class.java)), R.layout.widget_player_big)
         TileService.requestListeningState(ctx, ComponentName(ctx, PlayerTile::class.java))
+    }
+
+    fun onScreenOn(ctx: Context) {
+        if (!stale) return
+        stale = false
+        val mgr = AppWidgetManager.getInstance(ctx)
+        render(ctx, mgr, mgr.getAppWidgetIds(ComponentName(ctx, PlayerWidgetBig::class.java)), R.layout.widget_player_big)
     }
 
     private fun render(ctx: Context, mgr: AppWidgetManager, ids: IntArray, layout: Int) {
@@ -87,7 +110,8 @@ object Widgets {
                 val bmp = withContext(Dispatchers.IO) {
                     runCatching {
                         val r = coil.request.ImageRequest.Builder(ctx).data(wantCover).size(160, 230).allowHardware(false).build()
-                        (coil.ImageLoader(ctx).execute(r).drawable as? BitmapDrawable)?.bitmap
+                        // the app's shared loader (memory + disk cache) instead of a new one per cover
+                        (coil.Coil.imageLoader(ctx).execute(r).drawable as? BitmapDrawable)?.bitmap
                     }.getOrNull()
                 }
                 if (bmp != null) { coverUrl = wantCover; coverBmp = bmp; update(ctx) }

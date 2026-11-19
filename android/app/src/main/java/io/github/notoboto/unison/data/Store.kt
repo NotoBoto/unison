@@ -3,15 +3,14 @@ package io.github.notoboto.unison.data
 import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import java.io.File
+
+private const val LAZY_WRITE_MS = 30_000L
 
 val json = Json { ignoreUnknownKeys = true; explicitNulls = false; encodeDefaults = true; coerceInputValues = true }
 
@@ -22,9 +21,30 @@ class Store(context: Context, scope: CoroutineScope) {
     val state: StateFlow<AppState> = _state
     val s: AppState get() = _state.value
 
+    /**
+     * Writes are signalled here: true = soon (≈400 ms, as before), false = lazily. The playback ticker records the
+     * position and listening time every few seconds; writing the whole state file for each of those kept the flash and
+     * the CPU busy during long listening. Those lazy changes are written within [LAZY_WRITE_MS] (any regular change, a
+     * pause and leaving the app write them at once).
+     */
+    private val dirty = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+    @Volatile private var urgentPending = false
+    private fun changed(urgent: Boolean) { if (urgent) urgentPending = true; dirty.trySend(Unit) }
+
     init {
-        @OptIn(FlowPreview::class)
-        scope.launch(Dispatchers.IO) { _state.drop(1).debounce(400).collect { write(it) } }
+        scope.launch(Dispatchers.IO) {
+            var written: AppState = _state.value
+            while (true) {
+                dirty.receive()
+                if (!urgentPending) kotlinx.coroutines.withTimeoutOrNull(LAZY_WRITE_MS) { while (!urgentPending) dirty.receive() }
+                if (urgentPending) {
+                    // quiet period like the old debounce(400): a burst of changes is written once
+                    do { urgentPending = false; kotlinx.coroutines.delay(400) } while (dirty.tryReceive().isSuccess)
+                }
+                val st = _state.value
+                if (st !== written) { runCatching { write(st) }; written = st }
+            }
+        }
     }
 
     private fun load(): AppState = try {
@@ -38,7 +58,9 @@ class Store(context: Context, scope: CoroutineScope) {
     }
     fun flush() = write(_state.value)
 
-    fun update(f: (AppState) -> AppState) = _state.update(f)
+    fun update(f: (AppState) -> AppState) { _state.update(f); changed(true) }
+    /** A change that may reach the disk later (see [dirty]): playback position and listening time from the ticker. */
+    fun updateLazy(f: (AppState) -> AppState) { _state.update(f); changed(false) }
     fun settings(f: (Settings) -> Settings) = update { it.copy(settings = f(it.settings)) }
 
     fun exportJson(): String = json.encodeToString(AppState.serializer(), s)
@@ -53,7 +75,7 @@ class Store(context: Context, scope: CoroutineScope) {
     fun progress(book: String, n: Int): Progress = s.progress[book]?.get(n) ?: Progress()
     private val incognito get() = s.settings.incognito
 
-    fun setPos(book: String, n: Int, pos: Double, duration: Double) = if (incognito) Unit else update { st ->
+    fun setPos(book: String, n: Int, pos: Double, duration: Double, lazy: Boolean = false) = if (incognito) Unit else (if (lazy) ::updateLazy else ::update) { st ->
         val m = st.progress[book].orEmpty().toMutableMap()
         val old = m[n] ?: Progress()
         m[n] = old.copy(pos = pos, done = old.done || (duration > 0 && pos >= duration * 0.97), ts = System.currentTimeMillis())
@@ -66,7 +88,7 @@ class Store(context: Context, scope: CoroutineScope) {
         st.copy(progress = st.progress + (book to m))
     }
     /** listening time for statistics */
-    fun addListened(book: String, ms: Long) = if (incognito || ms <= 0) Unit else update { st ->
+    fun addListened(book: String, ms: Long) = if (incognito || ms <= 0) Unit else updateLazy { st ->
         val day = java.time.LocalDate.now().toString()
         st.copy(statsDays = st.statsDays + (day to ((st.statsDays[day] ?: 0) + ms)),
             statsBooks = st.statsBooks + (book to ((st.statsBooks[book] ?: 0) + ms)))
