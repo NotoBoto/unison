@@ -275,7 +275,8 @@ data class Book(val source: Source, val meta: BookMeta, val chapters: List<Chapt
     /** chapter data folder; may live on another host (absolute URL in books.json "data") */
     val dataUrl: String get() = abs(meta.data)!!
     val indexUrl: String get() = dataUrl + "index.json"
-    fun chUrl(n: Int, ext: String) = dataUrl + "ch%03d.%s".format(n, ext)
+    /** a chapter's file; a plugin book's chapter voiced in Studio lives in the Studio book's folder (§12) */
+    fun chUrl(n: Int, ext: String) = chapters.find { it.n == n }?.studio?.let { "$it.$ext" } ?: (dataUrl + "ch%03d.%s".format(n, ext))
     /** URLs to fetch the chapter audio from: the pieces when it is published split, else the one file */
     fun oggUrls(n: Int): List<String> = chapters.find { it.n == n }?.parts?.indices?.map { chUrl(n, "ogg") + "." + (it + 1) }
         ?: listOf(chUrl(n, "ogg"))

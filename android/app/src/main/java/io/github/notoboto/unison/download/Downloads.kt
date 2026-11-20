@@ -103,7 +103,7 @@ class Downloads(private val ctx: Context, private val app: UnisonApp, scope: Cor
             val st = state(b, n)
             if (!force && n !in requeue && (st == DlState.Done || st is DlState.Running || st == DlState.Queued)) continue
             val ch = b.chapters.find { it.n == n } ?: continue
-            if (textBook) {     // imported or plugin book: voice it on the phone
+            if (textBook && ch.studio == null) {     // imported or plugin book: voice it on the phone (a Studio chapter is downloaded)
                 enqueueTts(b, n, "${b.shortTitle} — ${ch.title}", background)
                 added++; continue
             }
@@ -209,8 +209,10 @@ class Downloads(private val ctx: Context, private val app: UnisonApp, scope: Cor
         val s = app.store.s.settings
         val after = b.chaptersAfter(n).map { it.n }
         if (io.github.notoboto.unison.data.isTextSource(b.source.url)) {
-            if (s.autoDownloadNext > 0 && io.github.notoboto.unison.data.isPluginSource(b.source.url)) enqueueText(b, after.take(s.autoDownloadNext))
-            if (s.voiceAhead > 0) enqueue(b, after.take(s.voiceAhead), background = true)
+            val studio = b.chapters.filter { it.studio != null }.map { it.n }.toSet()     // voiced in Unison Studio (§12)
+            if (s.autoDownloadNext > 0 && io.github.notoboto.unison.data.isPluginSource(b.source.url)) after.take(s.autoDownloadNext).partition { it in studio }
+                .let { (st, own) -> if (st.isNotEmpty()) enqueue(b, st); if (own.isNotEmpty()) enqueueText(b, own) }
+            if (s.voiceAhead > 0) enqueue(b, after.take(s.voiceAhead).filter { it !in studio }, background = true)
         } else if (s.autoDownloadNext > 0) enqueue(b, after.take(s.autoDownloadNext))
     }
 

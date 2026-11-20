@@ -81,6 +81,10 @@ class TtsWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, p
     private suspend fun work(): Result {
         val key = inputData.getString("key")!!; val id = inputData.getString("id")!!; val n = inputData.getInt("n", 0)
         val src = inputData.getString("src") ?: io.github.notoboto.unison.data.LOCAL_URL
+        // queued before Unison Studio published this chapter (§12): download its Studio voicing instead
+        app.repo.book(key)?.takeIf { b -> b.chapters.find { it.n == n }?.studio != null }?.let { b ->
+            app.downloads.enqueue(b, listOf(n), force = true); return Result.success()
+        }
         runCatching { setForeground(foreground(0f)) }
         val s0 = app.store.s.settings
         val usePiper = s0.ttsEngine == "piper" && io.github.notoboto.unison.data.Piper.installed(applicationContext, s0.piperNarrator)

@@ -158,6 +158,8 @@ fun BookScreen(nav: NavController, key: String) {
     val textBook = io.github.notoboto.unison.data.isTextSource(book.source.url)
     val ownText = book.source.url == io.github.notoboto.unison.data.LOCAL_URL     // imported: the text is always here
     val audioLabel = if (textBook) "Озвучить" else "Скачать аудио"
+    // a plugin book with chapters voiced in Unison Studio (§12): 🎭 for those, 📱 for the ones the phone voices
+    val mixed = textBook && book.chapters.any { it.studio != null }
     fun continueTarget(): Int? {
         val last = st.last[key]
         var ch = book.chapters.find { it.n == last }
@@ -188,7 +190,8 @@ fun BookScreen(nav: NavController, key: String) {
                         book.meta.author?.let { Meta(Icons.Outlined.Person, it) }
                         book.meta.translator?.let { Meta(Icons.Outlined.Translate, it) }
                         val total = book.chapters.sumOf { it.duration }
-                        Meta(Icons.Outlined.Schedule, if (io.github.notoboto.unison.data.isTextSource(book.source.url)) "${chapters(book.chapters.size)} • озвучено ${st.downloaded[key].orEmpty().size}" else "${hours(total)} • озвучено ${book.chapters.size}" + (book.meta.total?.let { " из $it" } ?: ""))
+                        Meta(Icons.Outlined.Schedule, if (io.github.notoboto.unison.data.isTextSource(book.source.url)) "${chapters(book.chapters.size)} • " +
+                            (if (mixed) "🎭 ${book.chapters.count { it.studio != null }} • " else "") + "озвучено ${st.downloaded[key].orEmpty().size}" else "${hours(total)} • озвучено ${book.chapters.size}" + (book.meta.total?.let { " из $it" } ?: ""))
                     }
                 }
             }
@@ -251,7 +254,7 @@ fun BookScreen(nav: NavController, key: String) {
                             }
                             if (!ownText) section("Скачать текст:", true)
                             if (!ownText) androidx.compose.material3.HorizontalDivider()
-                            section(if (textBook) "Озвучить синтезатором:" else "Скачать аудио:", false)
+                            section(if (mixed) "Озвучить или скачать 🎭:" else if (textBook) "Озвучить синтезатором:" else "Скачать аудио:", false)
                         }
                     }
                     IconButton(onClick = { filterSheet = true }) { Icon(Icons.Filled.FilterList, "Сортировка") }
@@ -327,7 +330,7 @@ fun BookScreen(nav: NavController, key: String) {
                         "download" -> if (txt(ch.n) == io.github.notoboto.unison.download.DlState.Done) app.downloads.deleteText(book, listOf(ch.n)) else app.downloads.enqueueText(book, listOf(ch.n))
                     } }) {
                 // the button downloads the text; the audio is made or downloaded from the selection bar (long press)
-                ChapterRow(chName(ch, s.fullTitles), subline(p, ch, !textBook || dl(ch.n).let { it == io.github.notoboto.unison.download.DlState.Done || it == io.github.notoboto.unison.download.DlState.Outdated }) + (if (bm > 0) " • закладок: $bm" else ""), read = p.done, selected = ch.n in sel, dl = txt(ch.n),
+                ChapterRow((if (mixed) (if (ch.studio != null) "🎭 " else "📱 ") else "") + chName(ch, s.fullTitles), subline(p, ch, !textBook || ch.studio != null || dl(ch.n).let { it == io.github.notoboto.unison.download.DlState.Done || it == io.github.notoboto.unison.download.DlState.Outdated }) + (if (bm > 0) " • закладок: $bm" else ""), read = p.done, selected = ch.n in sel, dl = txt(ch.n),
                     onClick = { if (sel.isNotEmpty()) toggle(ch.n) else open(ch.n) }, onLongClick = { longPress(ch.n) },
                     onDownload = { app.downloads.enqueueText(book, listOf(ch.n)) }, onCancel = { app.downloads.cancelText(book, ch.n) },
                     onDelete = { app.downloads.deleteText(book, listOf(ch.n)) }, onUpdate = { app.downloads.enqueueText(book, listOf(ch.n)) },

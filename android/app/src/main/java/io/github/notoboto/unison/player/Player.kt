@@ -510,6 +510,7 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
     /** Whether chapter [n] has audio: web books always, text books only once voiced, imported audiobooks always. */
     fun hasAudio(b: Book, n: Int): Boolean =
         !io.github.notoboto.unison.data.isTextSource(b.source.url) || app.store.isDownloaded(b.key, n) ||
+            b.chapters.find { it.n == n }?.studio != null ||       // voiced in Unison Studio (§12)
             (b.source.url == io.github.notoboto.unison.data.LOCAL_URL &&
                 audioBooks.getOrPut(b.meta.id) { io.github.notoboto.unison.data.Local.isAudio(ctx, b.meta.id) })
     private val audioBooks = java.util.concurrent.ConcurrentHashMap<String, Boolean>()   // imported audiobooks never turn into text
@@ -540,7 +541,7 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
         val p = active
         if (p.mediaItemCount == 0) {
             now.value?.let { np -> if (io.github.notoboto.unison.data.isTextSource(np.book.source.url)) {
-                if (!app.store.isDownloaded(np.book.key, np.n)) {
+                if (!hasAudio(app.repo.book(np.book.key) ?: np.book, np.n)) {
                     android.widget.Toast.makeText(ctx, "Глава ещё не озвучена: нажмите ⤓ у главы", android.widget.Toast.LENGTH_LONG).show(); return }
                 open(app.repo.book(np.book.key) ?: np.book, np.n, autoplay = true); return
             } }

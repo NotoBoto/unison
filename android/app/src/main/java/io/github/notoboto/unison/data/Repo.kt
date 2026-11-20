@@ -206,8 +206,12 @@ class Repo(private val context: Context, private val store: Store) {
     }
     fun deleteLocal(key: String, n: Int) {
         runCatching { files.delete(key, n) }
-        book(key)?.images(n)?.forEach { im -> runCatching { files.deleteFile(key, im.localName) } }
+        val b = book(key)
+        b?.images(n)?.forEach { im -> runCatching { files.deleteFile(key, im.localName) } }
+        val wasPhone = store.s.downloaded[key]?.get(n) == "tts"
         store.unmarkDownloaded(key, n)
+        // the phone's voicing of a plugin chapter is gone: the Studio version, if there is one, takes its place (§12)
+        if (wasPhone && b != null && isPluginSource(b.source.url) && StudioOverlay.file(context, b.source.url, b.meta.id).exists()) reloadLocal()
     }
 
     /** Pictures of a chapter for the reader: (after, model for Coil, picture); the downloaded copy when there is one. */
@@ -242,11 +246,16 @@ class Repo(private val context: Context, private val store: Store) {
     }
 
     suspend fun chapterText(b: Book, n: Int): ChapterText = withContext(Dispatchers.IO) {
-        val k = b.key + ":" + n
+        val ch = b.chapters.find { it.n == n }
+        val k = b.key + ":" + n + ":" + ch?.v     // a chapter switched between the phone's and Studio's voicing is another text
         synchronized(textCache) { textCache[k] }?.let { return@withContext it }
         val voiced = store.isDownloaded(b.key, n) && runCatching { files.exists(b.key, n, "json") }.getOrDefault(false)
         // a web chapter whose text alone was downloaded (no audio): read the local copy
         val localText = voiced || (!isTextSource(b.source.url) && runCatching { files.exists(b.key, n, "json") }.getOrDefault(false))
+        if (!voiced && ch?.studio != null) {
+            // a plugin book's chapter voiced in Unison Studio (§12): its text with timings comes from there
+            runCatching { parseChapter(get(b.chUrl(n, "json"))) }.getOrNull()?.let { t -> synchronized(textCache) { textCache[k] = t }; return@withContext t }
+        }
         if (!voiced && isTextSource(b.source.url)) {
             // a plugin chapter is fetched through the plugin the first time it is opened (§8.3)
             if (isPluginSource(b.source.url) && !TextBooks.hasText(context, b.source.url, b.meta.id, n)) {

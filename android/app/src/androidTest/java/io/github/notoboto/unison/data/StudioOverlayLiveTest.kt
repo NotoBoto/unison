@@ -49,6 +49,51 @@ class StudioOverlayLiveTest {
         assertNotNull(ch.hash)
     }
 
+    @Test fun studioChapterIsReadPlayedAndDownloadedFromStudio() = runBlocking<Unit> {
+        app.sources.repos.ensureBuiltIns()
+        assertTrue(app.repo.refreshSource(DEFAULT_SOURCE).isSuccess)
+        val bookId = "Толстый и тонкий (Чехов)"
+        val id = app.sources.books.add("wikisource-ru", app.sources.details("wikisource-ru", bookId), app.sources.chapters("wikisource-ru", bookId)).also { made += it }
+        assertTrue(app.repo.refreshStudio(src, id))
+        val key = bookKey(src, id)
+        val b = app.repo.book(key)!!
+        val n = b.chapters.single().n
+
+        // played and read from Studio, no voicing on the phone
+        assertTrue(app.player.hasAudio(b, n))
+        assertEquals("https://unison-tolstyy-i-tonkiy.pages.dev/ch001.ogg", app.repo.audioUri(b, n))
+        val t = app.repo.chapterText(b, n)
+        assertTrue("Studio roles", t.roles.size > 1)
+        assertTrue("word timings", t.paras.drop(1).all { p -> p.all { it.t != null } })
+        assertEquals("paras[0] is the title", "Толстый и тонкий", t.paras[0].joinToString(" ") { it.word })
+
+        // «Скачать» downloads the Studio files instead of voicing
+        app.downloads.enqueue(b, listOf(n))
+        val until = System.currentTimeMillis() + 90_000
+        while (!app.store.isDownloaded(key, n) && System.currentTimeMillis() < until) kotlinx.coroutines.delay(500)
+        assertEquals(b.chapters.single().v, app.store.s.downloaded[key]?.get(n))
+        assertEquals(io.github.notoboto.unison.download.DlState.Done, app.downloads.state(b, n))
+        assertTrue(app.repo.audioUri(b, n).startsWith("file:"))
+        assertTrue("the downloaded copy is read", app.repo.chapterText(b, n).roles.size > 1)
+        app.repo.deleteLocal(key, n)
+        assertFalse(app.store.isDownloaded(key, n))
+    }
+
+    @Test fun phoneVoicedChapterKeepsItsVoicingUntilDeleted() = runBlocking<Unit> {
+        app.sources.repos.ensureBuiltIns()
+        assertTrue(app.repo.refreshSource(DEFAULT_SOURCE).isSuccess)
+        val bookId = "Толстый и тонкий (Чехов)"
+        val id = app.sources.books.add("wikisource-ru", app.sources.details("wikisource-ru", bookId), app.sources.chapters("wikisource-ru", bookId)).also { made += it }
+        val key = bookKey(src, id)
+        app.repo.reloadLocal()
+        val n = app.repo.book(key)!!.chapters.single().n
+        app.store.markDownloaded(key, n, "tts")      // voiced on the phone before Studio published the chapter
+        assertTrue(app.repo.refreshStudio(src, id))
+        assertNull("the phone's voicing stays", app.repo.book(key)!!.chapters.single().studio)
+        app.repo.deleteLocal(key, n)
+        assertNotNull("deleted: the Studio chapter takes its place", app.repo.book(key)!!.chapters.single().studio)
+    }
+
     @Test fun bookWithoutStudioVersionHasNoOverlay() = runBlocking<Unit> {
         app.sources.repos.ensureBuiltIns()
         assertTrue(app.repo.refreshSource(DEFAULT_SOURCE).isSuccess)
