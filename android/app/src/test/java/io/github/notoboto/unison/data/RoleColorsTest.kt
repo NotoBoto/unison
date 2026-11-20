@@ -62,17 +62,39 @@ class RoleColorsTest {
 
     /** Numbers of the Python model (scripts/role_colors_check.py) for the same orders. */
     @Test fun sameAsModel() {
-        val golden = mapOf("seq" to (18 to 50), "reversed" to (18 to 61), "stride" to (18 to 57))
+        val golden = mapOf("seq" to (18 to 50), "reversed" to (18 to 61), "stride" to (18 to 60))
         for ((name, order) in orders) {
             val a = read(name, order)
             assertEquals("$name: chapters with a collision, colour changes", golden[name], a.collisions to a.changes)
         }
         val br = read("seq", seq).br
         assertEquals(mapOf("Гарри" to 2, "Квиррелл" to 0, "Дамблдор" to 6, "Гермиона" to 7, "МакГонагалл" to 4, "Драко" to 9,
-            "Безымянный_м" to 11, "Толпа" to 10, "Снейп" to 3, "Безымянный_ж" to 1),
+            "Безымянный_м" to 10, "Толпа" to 8, "Снейп" to 11, "Безымянный_ж" to 1),
             br.seen.entries.sortedWith(compareBy({ -it.value }, { it.key })).take(10).associate { it.key to br.color.getValue(it.key) })
         val ch1 = book.getValue(1)                         // Рассказчик, Майкл, Петуния, Гарри, Фигг: as the old (role - 1) % n
         assertEquals(listOf(-1, 0, 1, 2, 3), RoleColors.colorsFor(RoleColors.learn(BookRoles(), ch1, 1), ch1).toList())
+    }
+
+    /** Speakers of one chapter per colour. */
+    private fun crowd(br: BookRoles, r: List<String>): Int =
+        RoleColors.colorsFor(br, r).drop(1).zip(r.drop(1)).distinct().groupingBy { it.first }.eachCount().values.max()
+
+    /** More speakers than colours: newcomers share the colours evenly, none piles on one (the bug: ch 63 opened first,
+     *  37 speakers, all seen 0 -> 26 of them on colour 0). */
+    @Test fun crowdedChapterSharesColours() {
+        val r = book.getValue(63)
+        val speakers = r.drop(1).distinct().size
+        assertEquals(37, speakers)
+        val br = RoleColors.learn(BookRoles(), r, 63)
+        val perColour = br.color.values.groupingBy { it }.eachCount()
+        assertEquals((0 until RoleColors.SIZE).toSet(), perColour.keys)
+        assertTrue("ch63 first: $perColour", perColour.values.max() <= (speakers + RoleColors.SIZE - 1) / RoleColors.SIZE)
+        assertEquals(4, crowd(br, r))
+        // chapters 1..63 in order: no worse than before the fix (old: 19 colour changes, up to 12 speakers on one colour)
+        var b = BookRoles(); var worst = 0
+        for (n in seq.filter { it <= 63 }) { b = RoleColors.learn(b, book.getValue(n), n); worst = maxOf(worst, crowd(b, book.getValue(n))) }
+        assertEquals(5, worst)
+        assertEquals(5 to 18, read("1..63", seq.filter { it <= 63 }).let { it.collisions to it.changes })
     }
 
     @Test fun piperAndNothingToWrite() {

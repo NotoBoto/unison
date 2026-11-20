@@ -5,7 +5,8 @@ package io.github.notoboto.unison.data
  * - a newcomer gets a colour nobody present in the chapter shows; among those, the one whose most frequent owner was met
  *   least often (then the smaller sum of its owners' meetings, then the smaller number);
  * - two present with one colour: the one met more often in the book keeps it, the other takes a free colour for good;
- * - no free colour (more speakers than colours): the shared colour stays.
+ * - no free colour (more speakers than colours): the shared colour stays; a newcomer then takes the colour fewest of the
+ *   chapter's speakers show (then the same order as above, then fewer owners in the book), so they share evenly.
  * roles = the chapter's "roles" list, index 0 = narrator (never coloured).
  */
 object RoleColors {
@@ -57,14 +58,17 @@ object RoleColors {
         return c
     }
 
-    /** The least «owned» colour outside [taken] (all colours when none is free). Owners = the whole book, with this
-     *  chapter's placements [now] over the stored ones. */
+    /** The least «owned» colour outside [taken]. Owners = the whole book, with this chapter's placements [now] over the
+     *  stored ones. When none is free (more speakers than colours) the least crowded colour in this chapter first, so a
+     *  crowd of newcomers spreads over all colours instead of piling on one (a book's first chapter: everyone seen 0). */
     private fun pick(br: BookRoles, now: Map<String, Int>, taken: Set<Int>, size: Int): Int {
-        val maxSeen = IntArray(size); val sumSeen = IntArray(size)
-        fun own(nm: String, col: Int) { val s = br.seen[nm] ?: 0; val k = Math.floorMod(col, size); if (s > maxSeen[k]) maxSeen[k] = s; sumSeen[k] += s }
+        val maxSeen = IntArray(size); val sumSeen = IntArray(size); val owners = IntArray(size)
+        fun own(nm: String, col: Int) { val s = br.seen[nm] ?: 0; val k = Math.floorMod(col, size); if (s > maxSeen[k]) maxSeen[k] = s; sumSeen[k] += s; owners[k]++ }
         br.color.forEach { (nm, col) -> if (nm !in now) own(nm, col) }
         now.forEach { (nm, col) -> own(nm, col) }
-        val free = (0 until size).filter { it !in taken }.ifEmpty { (0 until size).toList() }
-        return free.minWith(compareBy({ maxSeen[it] }, { sumSeen[it] }, { it }))
+        val free = (0 until size).filter { it !in taken }
+        if (free.isNotEmpty()) return free.minWith(compareBy({ maxSeen[it] }, { sumSeen[it] }, { it }))
+        val here = IntArray(size).also { h -> now.values.forEach { h[Math.floorMod(it, size)]++ } }
+        return (0 until size).minWith(compareBy({ here[it] }, { maxSeen[it] }, { sumSeen[it] }, { owners[it] }, { it }))
     }
 }
