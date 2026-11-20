@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -135,13 +136,15 @@ class Repo(private val context: Context, private val store: Store) {
 
     /**
      * Switches chapter [n], voiced by the phone, to its Studio version (§12). The position moves to the same word of the same
-     * paragraph, or by the share of time when the chapter hashes differ. Without the network nothing changes (false).
+     * paragraph, or by the share of time when the chapter hashes differ. Without the network nothing changes (false); the
+     * user waits for it on opening the chapter, so a bad network gives up after [QUICK_TIMEOUT_S] and the phone's voicing plays.
      */
     suspend fun switchStarted(b: Book, n: Int): Boolean = withContext(Dispatchers.IO) {
         if (store.s.downloaded[b.key]?.get(n) != "tts") return@withContext false
         val link = StudioOverlay.load(context, b.source.url, b.meta.id) ?: return@withContext false
         val s = StudioOverlay.studioChapter(link, StudioOverlay.chapterIds(context, b.source.url, b.meta.id), n) ?: return@withContext false
-        val studio = runCatching { parseChapter(get(link.data + "ch%03d.json".format(s.n))) }.getOrNull() ?: return@withContext false
+        val studio = runCatching { parseChapter(get(link.data + "ch%03d.json".format(s.n), quick = true)) }.getOrNull() ?: return@withContext false
+        ensureActive()      // the user opened something else meanwhile: leave the chapter as it is
         val p = store.progress(b.key, n)
         if (p.pos > 0 && !p.done) {
             val phone = runCatching { parseChapter(files.readText(b.key, n, "json")) }.getOrNull()
@@ -174,8 +177,11 @@ class Repo(private val context: Context, private val store: Store) {
         _chapters.value = chs
     }
 
-    suspend fun get(url: String): String = withContext(Dispatchers.IO) {
-        http.newCall(Request.Builder().url(url).cacheControl(CacheControl.FORCE_NETWORK).build()).execute().use { r ->
+    /** For requests the user waits for with nothing on screen (opening a chapter): a bad network fails fast. */
+    private val quickHttp: OkHttpClient by lazy { http.newBuilder().callTimeout(QUICK_TIMEOUT_S, TimeUnit.SECONDS).build() }
+
+    suspend fun get(url: String, quick: Boolean = false): String = withContext(Dispatchers.IO) {
+        (if (quick) quickHttp else http).newCall(Request.Builder().url(url).cacheControl(CacheControl.FORCE_NETWORK).build()).execute().use { r ->
             if (!r.isSuccessful) error("HTTP ${r.code}")
             r.body!!.string()
         }
@@ -341,6 +347,8 @@ class Repo(private val context: Context, private val store: Store) {
     companion object {
         /** How often plugin books are asked for new chapters outside a manual refresh (§8.6). */
         const val PLUGIN_CHECK_MS = 6 * 3600_000L
+        /** A request the user waits for with nothing on screen ([get] quick). */
+        const val QUICK_TIMEOUT_S = 8L
 
         fun parseChapter(text: String): ChapterText {
             val o = json.parseToJsonElement(text).jsonObject

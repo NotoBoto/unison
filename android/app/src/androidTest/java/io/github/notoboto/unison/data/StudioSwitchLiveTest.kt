@@ -124,3 +124,17 @@ class StudioSwitchLiveTest {
         assertTrue("the position moved into Studio's timeline", app.store.progress(key, n).pos in 1.0..app.player.now.value!!.duration)
     }
 }
+
+/** Requests the user waits for on opening a chapter give up quickly on a bad network (SOURCES_DESIGN.md §12). */
+@RunWith(AndroidJUnit4::class)
+class QuickGetTest {
+    private val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as UnisonApp
+
+    @Test fun quickRequestGivesUpInTime() = runBlocking<Unit> {
+        val t0 = System.currentTimeMillis()
+        // a non-routable address: the connection hangs instead of failing (Wi-Fi without internet)
+        assertTrue(runCatching { app.repo.get("http://10.255.255.1/ch001.json", quick = true) }.isFailure)
+        val ms = System.currentTimeMillis() - t0
+        assertTrue("gave up after $ms ms", ms < (Repo.QUICK_TIMEOUT_S + 2) * 1000)
+    }
+}
