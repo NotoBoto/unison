@@ -452,7 +452,7 @@ fun CharactersScreen(nav: NavController, key: String) {
             l == null -> EmptyState("⏳", "Загружаю…", Modifier.padding(pad))
             l.isEmpty() -> EmptyState("🎭", "Для этой книги нет списка действующих лиц или нет интернета.", Modifier.padding(pad))
             else -> LazyColumn(Modifier.padding(pad)) {
-                item { Text("Нажмите ▶, чтобы услышать голос. В тексте главы нажатие на имя в списке ролей подсвечивает реплики персонажа.",
+                item { Text("Нажмите ▶, чтобы услышать голос. В тексте главы нажатие на имя в списке ролей подсвечивает реплики персонажа. Долгое нажатие — выбрать цвет.",
                     Modifier.padding(16.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 items(l, key = { it.name }) { c ->
                     val range = if (c.chapters.isEmpty()) "" else if (c.chapters.size == 1) "глава ${c.chapters[0]}" else "главы ${c.chapters.first()}–${c.chapters.last()} (${c.chapters.size})"

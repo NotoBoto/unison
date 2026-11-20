@@ -44,6 +44,7 @@ import io.github.notoboto.unison.data.Settings
 import io.github.notoboto.unison.data.Tok
 import kotlin.math.roundToInt
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -155,6 +156,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.navigation.NavController
 import io.github.notoboto.unison.app
 import io.github.notoboto.unison.data.ChapterText
+import io.github.notoboto.unison.data.BookRoles
 import io.github.notoboto.unison.data.RoleColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -222,6 +224,7 @@ fun ReaderScreen(nav: NavController, key: String, n: Int) {
     var moreMenu by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
     var focusRole by remember(np?.n) { mutableStateOf(-1) }
+    var colorFor by remember(np?.n) { mutableStateOf(-1) }     // the speaker (index in roles) whose colour dialog is open
     var readOnlyPref by remember { mutableStateOf(false) }
     var visibleTime by remember { mutableStateOf<Double?>(null) }
     var wordMenu by remember { mutableStateOf<WordHit?>(null) }
@@ -274,7 +277,7 @@ fun ReaderScreen(nav: NavController, key: String, n: Int) {
             playerMode || t.paras.size <= 1 -> PlayerMode(t, roleIdx, np?.book?.coverUrl, posState, look, zones, if (barH > 0.dp) barH else 250.dp, onToggleUi = { immersive = !immersive })
             else -> TextMode(t, roleIdx, posState, look, immersive, if (immersive || readOnly) 0.dp else barH, zones, focusRole, { focusRole = it }, readOnly, { visibleTime = it }, hasAudio = hasAudio,
                 onTapEmpty = { immersive = !immersive }, onSeek = { player.seekTo(it); player.play() }, onLong = { wordMenu = it },
-                marks = np?.let { st.highlights[it.book.key] }.orEmpty(), pics = pics, onPicture = { bigPic = it })
+                marks = np?.let { st.highlights[it.book.key] }.orEmpty(), pics = pics, onPicture = { bigPic = it }, onPickColor = { colorFor = it })
         }
         bigPic?.let { PictureViewer(it, onClose = { bigPic = null }) }
 
@@ -448,6 +451,23 @@ fun ReaderScreen(nav: NavController, key: String, n: Int) {
     }
 
     if (readingSheet) ReadingSheet(s, { f -> app.store.settings(f) }) { readingSheet = false }
+    // the reader colour of one speaker (ROLE_COLORS_GROOM.md §6): long press on the name above the text
+    val ct = text
+    if (colorFor > 0 && ct != null && np != null && colorFor < ct.roles.size) {
+        val name = ct.roles[colorFor]
+        val br = bookRoles
+        val others = remember(ct, roleIdx, colorFor) {
+            ct.roles.indices.filter { it > 0 && ct.roles[it] != name && it < roleIdx.size }
+                .groupBy({ roleIdx[it] }, { ct.roles[it] }).mapValues { (_, v) -> v.distinct() }
+        }
+        val owners = remember(br, name) { RoleColors.owners(br ?: BookRoles(), name) }
+        RoleColorDialog(name, current = roleIdx.getOrElse(colorFor) { -1 }, pinned = br?.pinned?.containsKey(name) == true,
+            palette = if (look.lightBg) roleColorsLight else roleColorsDark, bg = look.bg, fg = look.fg,
+            others = others, owners = owners, pinnedCount = br?.pinned?.size ?: 0,
+            onPick = { k -> app.store.pinRoleColors(np.book.key, np.n, ct.roles) { if (k == null) it - name else it + (name to k) } },
+            onResetAll = { app.store.pinRoleColors(np.book.key, np.n, ct.roles) { emptyMap() } },
+            onDismiss = { colorFor = -1 })
+    }
     if (searchOpen) text?.let { tt -> ChapterSearchDialog(tt, onPick = { time -> searchOpen = false; player.seekTo(time) }) { searchOpen = false } }
     wordMenu?.let { hit -> WordDialog(hit, np?.book?.meta?.title ?: "", np?.book?.coverUrl,
         onListen = if (readOnly || (text?.paras?.getOrNull(hit.p)?.any { it.t != null } != true)) null else { { player.seekTo(hit.pos); player.play() } },
@@ -561,7 +581,8 @@ private fun buildPara(toks: List<Tok>, roleCol: List<Color>, active: Int, look: 
 private fun TextMode(t: ChapterText, roleIdx: IntArray, posState: State<Double>, look: Look, immersive: Boolean, bottomInset: androidx.compose.ui.unit.Dp, zones: Zones, focusRole: Int, onFocus: (Int) -> Unit,
                      readOnly: Boolean, onVisible: (Double) -> Unit, hasAudio: Boolean = true, onTapEmpty: () -> Unit, onSeek: (Double) -> Unit,
                      onLong: (WordHit) -> Unit, marks: List<io.github.notoboto.unison.data.Highlight> = emptyList(),
-                     pics: Map<Int, List<Pair<String, ChapterImage>>> = emptyMap(), onPicture: (Pair<String, ChapterImage>) -> Unit = {}) {
+                     pics: Map<Int, List<Pair<String, ChapterImage>>> = emptyMap(), onPicture: (Pair<String, ChapterImage>) -> Unit = {},
+                     onPickColor: (Int) -> Unit = {}) {
     val colors = if (look.lightBg) roleColorsLight else roleColorsDark
     val roleCol = remember(roleIdx, colors) { roleColorsOf(roleIdx, colors) }
     // the spoken word: changes ~3 times a second, not on every 200-ms position tick (Pair compares by equals)
@@ -641,7 +662,8 @@ private fun TextMode(t: ChapterText, roleIdx: IntArray, posState: State<Double>,
           Column {
             FlowRow(Modifier.padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 t.roles.forEachIndexed { i, r ->
-                    if (i > 0) Text("● $r", Modifier.clip(RoundedCornerShape(6.dp)).clickable { onFocus(if (focusRole == i) -1 else i) }
+                    if (i > 0) Text("● $r", Modifier.clip(RoundedCornerShape(6.dp)).combinedClickable(onClickLabel = if (focusRole == i) "снять подсветку" else "подсветить реплики",
+                            onLongClickLabel = "выбрать цвет", onLongClick = { onPickColor(i) }) { onFocus(if (focusRole == i) -1 else i) }
                         .background(if (focusRole == i) roleCol[i].copy(alpha = .18f) else Color.Transparent).padding(horizontal = 4.dp, vertical = 2.dp),
                         fontSize = 13.sp, color = roleCol[i], fontWeight = if (focusRole == i) FontWeight.Bold else null)
                 }

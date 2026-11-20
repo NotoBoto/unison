@@ -46,6 +46,9 @@ val roleColorsDark = listOf(0xFF7CC0FF, 0xFFFF9F73, 0xFF7FD99A, 0xFFEC92E0, 0xFF
     0xFF50B818, 0xFFC79BFF, 0xFF4FE0B0).map { Color(it) }
 val roleColorsLight = listOf(0xFF1F6FB2, 0xFFB0471F, 0xFF2F8A4A, 0xFF9A3A8E, 0xFF8A6D00, 0xFF00828A, 0xFFC2335B, 0xFF5B5FC7, 0xFF6D7F1F,
     0xFF206000, 0xFF7A3FC0, 0xFF00805A).map { Color(it) }
+/** Spoken names of the role colours (TalkBack), by number; one hue family in both themes. Size = RoleColors.SIZE. */
+val roleColorNames = listOf("голубой", "рыжий", "травяной", "пурпурный", "горчичный", "бирюзовый", "розовый", "синий",
+    "оливковый", "лесной", "фиолетовый", "мятный")
 val LocalIsDark = staticCompositionLocalOf { true }
 
 @Composable
