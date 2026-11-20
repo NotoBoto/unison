@@ -60,4 +60,14 @@ class StudioOverlayTest {
         assertSame(phone, StudioOverlay.apply(phone, ids, null, emptySet()))
         assertEquals(phone, StudioOverlay.apply(phone, emptyMap(), link, emptySet()), "no chapterIds: nothing matches")
     }
+
+    @Test fun hasStudioReadsChapterIdsOnlyWithALink() {
+        var reads = 0
+        val read = { reads++; ids }
+        kotlin.test.assertFalse(StudioOverlay.hasStudio(null, read, 1))
+        assertEquals(0, reads, "a book without a Studio version: chapters.json is not read (main thread, every opening)")
+        kotlin.test.assertTrue(StudioOverlay.hasStudio(link, read, 1))
+        kotlin.test.assertFalse(StudioOverlay.hasStudio(link, read, 4), "x is not voiced in Studio")
+        assertEquals(2, reads)
+    }
 }

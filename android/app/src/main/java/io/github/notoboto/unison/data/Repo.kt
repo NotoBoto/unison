@@ -128,8 +128,10 @@ class Repo(private val context: Context, private val store: Store) {
     }
 
     /** Whether opening chapter [n] switches it from the phone's voicing to Studio's ([switchStarted]). */
+    /** Runs on the main thread at every chapter opening: chapters.json is read only for a book with a Studio version. */
     fun studioWaiting(b: Book, n: Int): Boolean = isPluginSource(b.source.url) && store.s.downloaded[b.key]?.get(n) == "tts" &&
-        StudioOverlay.studioChapter(StudioOverlay.load(context, b.source.url, b.meta.id), StudioOverlay.chapterIds(context, b.source.url, b.meta.id), n) != null
+        b.key in _studioBooks.value &&
+        StudioOverlay.hasStudio(StudioOverlay.load(context, b.source.url, b.meta.id), { StudioOverlay.chapterIds(context, b.source.url, b.meta.id) }, n)
 
     /**
      * Switches chapter [n], voiced by the phone, to its Studio version (§12). The position moves to the same word of the same

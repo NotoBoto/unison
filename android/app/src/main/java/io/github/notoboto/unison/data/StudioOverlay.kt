@@ -43,6 +43,9 @@ object StudioOverlay {
         return link?.chapters?.firstOrNull { it.id == id }
     }
 
+    /** Whether chapter [n] has a Studio version; [ids] (a chapters.json read) is only asked for when there is a [link]. */
+    fun hasStudio(link: Link?, ids: () -> Map<Int, String>, n: Int): Boolean = link != null && studioChapter(link, ids(), n) != null
+
     /**
      * The chapter list of a plugin book with the Studio chapters put in (matched by chapterId; the order, n and titles stay
      * the phone's). A chapter the phone has voiced itself ([phoneVoiced]) keeps its own audio until it is switched.
