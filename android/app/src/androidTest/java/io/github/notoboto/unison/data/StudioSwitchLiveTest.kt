@@ -123,6 +123,18 @@ class StudioSwitchLiveTest {
         assertTrue("🎭", app.repo.book(key)!!.chapters.single().studio != null)
         assertTrue("the position moved into Studio's timeline", app.store.progress(key, n).pos in 1.0..app.player.now.value!!.duration)
     }
+
+    @Test fun aChapterStillSwitchingDoesNotOpenAfterTheUserMovedOn() = runBlocking<Unit> {
+        app.store.setPos(key, n, phone.duration / 2, phone.duration)
+        assertTrue(app.repo.refreshStudio(src, id))
+        val b = app.repo.book(key)!!
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            app.player.open(b, n, autoplay = true)      // starts switching (a network request)…
+            app.player.close()                          // …and the user closes the player before it is done
+        }
+        delay((Repo.QUICK_TIMEOUT_S + 4) * 1000)
+        assertNull("the chapter did not open by itself afterwards", app.player.now.value)
+    }
 }
 
 /** Requests the user waits for on opening a chapter give up quickly on a bad network (SOURCES_DESIGN.md §12). */

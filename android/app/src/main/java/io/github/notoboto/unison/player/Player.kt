@@ -26,6 +26,7 @@ import io.github.notoboto.unison.data.Book
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -514,14 +515,19 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
             (b.source.url == io.github.notoboto.unison.data.LOCAL_URL &&
                 audioBooks.getOrPut(b.meta.id) { io.github.notoboto.unison.data.Local.isAudio(ctx, b.meta.id) })
     private val audioBooks = java.util.concurrent.ConcurrentHashMap<String, Boolean>()   // imported audiobooks never turn into text
+    /** A chapter being switched to its Studio voicing before it opens (main thread only). */
+    private var studioSwitch: Job? = null
 
     /** Load a chapter; continue from saved position unless it was finished. */
     fun open(b: Book, n: Int, autoplay: Boolean, switchToStudio: Boolean = true) {
+        studioSwitch?.cancel(); studioSwitch = null      // the latest choice wins over a chapter still switching
         if (now.value?.book?.key == b.key && now.value?.n == n && exo.mediaItemCount > 0) { if (autoplay) play(); return }
         // voiced by the phone, voiced in Unison Studio since: switch now, at the same word (SOURCES_DESIGN.md §12)
         if (switchToStudio && app.repo.studioWaiting(b, n)) {
-            scope.launch {
+            studioSwitch = scope.launch {
                 app.repo.switchStarted(b, n)
+                ensureActive()
+                studioSwitch = null
                 open(app.repo.book(b.key) ?: b, n, autoplay, switchToStudio = false)
             }
             return
@@ -571,6 +577,7 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
     fun toggle() = if (active.isPlaying) pause() else play()
     /** Hide the mini player: save the position, stop and unload the chapter. Play from history/widget resumes it. */
     fun close() {
+        studioSwitch?.cancel(); studioSwitch = null
         saveNow(); active.pause()
         if (!casting.value) { exo.stop(); exo.clearMediaItems() }
         stopTicker(); cancelSleep()
