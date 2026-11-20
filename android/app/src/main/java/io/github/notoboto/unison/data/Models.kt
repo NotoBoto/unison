@@ -177,12 +177,14 @@ data class BookEdit(val title: String? = null, val cover: String? = null)
 
 /** Reader role colours of one book (ROLE_COLORS_GROOM.md): each character keeps one colour for the whole book.
  *  [color]: name -> colour number in the reader palette (ui/Theme.kt), [seen]: name -> chapters met in (seniority when two
- *  share a colour), [chapters]: chapters already counted in [seen]. */
+ *  share a colour), [chapters]: chapters already counted in [seen], [pinned]: name -> colour the user chose (§6): always
+ *  shown, never gives way; its [color] entry is kept, so «automatic» brings the old colour back. */
 @Serializable
 data class BookRoles(
     val color: Map<String, Int> = emptyMap(),
     val seen: Map<String, Int> = emptyMap(),
     val chapters: Set<Int> = emptySet(),
+    val pinned: Map<String, Int> = emptyMap(),
 )
 
 @Serializable

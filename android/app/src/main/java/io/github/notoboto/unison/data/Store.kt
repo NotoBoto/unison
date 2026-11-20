@@ -116,6 +116,14 @@ class Store(context: Context, scope: CoroutineScope) {
             if (new === old) st else st.copy(roleColors = st.roleColors + (book to new))
         }
     }
+    /** The user's role colours of [book] (data/RoleColors.kt withPinned): [f] maps the old name -> colour to the new one.
+     *  [n]/[roles] = the chapter on screen (-1 / empty outside one). A setting: written in incognito too, with the owners that
+     *  give way to it (seen/chapters are not touched, so nothing of the reading is recorded). */
+    fun pinRoleColors(book: String, n: Int, roles: List<String>, f: (Map<String, Int>) -> Map<String, Int>) = update { st ->
+        val old = st.roleColors[book] ?: BookRoles()
+        val new = RoleColors.withPinned(old, f(old.pinned), roles, n)
+        if (new === old) st else st.copy(roleColors = st.roleColors + (book to new))
+    }
 
     fun opened(book: String, n: Int) = if (incognito) update { it.copy(last = it.last + (book to n)) } else update { st ->
         st.copy(last = st.last + (book to n), lastTs = st.lastTs + (book to System.currentTimeMillis()),
