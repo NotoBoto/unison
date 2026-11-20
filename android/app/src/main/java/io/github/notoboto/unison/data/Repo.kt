@@ -51,8 +51,46 @@ class Repo(private val context: Context, private val store: Store) {
         for (src in srcs) {
             val list = TextBooks.catalog(context, src.url)
             _catalogs.update { it + (src.url to list) }
-            _chapters.update { m -> m + list.associate { bookKey(src.url, it.id) to TextBooks.chapters(context, src.url, it.id) } }
+            _chapters.update { m -> m + list.associate { bookKey(src.url, it.id) to localChapters(src.url, it.id) } }
         }
+    }
+
+    /** Chapters of a text book from disk; a plugin book gets the chapters voiced in Unison Studio put in (§12). */
+    private fun localChapters(sourceUrl: String, id: String): List<ChapterMeta> {
+        val list = TextBooks.chapters(context, sourceUrl, id)
+        if (!isPluginSource(sourceUrl)) return list
+        val link = StudioOverlay.load(context, sourceUrl, id) ?: return list
+        val phoneVoiced = store.s.downloaded[bookKey(sourceUrl, id)].orEmpty().filterValues { it == "tts" }.keys
+        return StudioOverlay.apply(list, StudioOverlay.chapterIds(context, sourceUrl, id), link, phoneVoiced)
+    }
+
+    /**
+     * Finds the Unison Studio book made from this plugin book (catalog `origin`, §12) and keeps its index.json next to the
+     * book. Only a book with a match costs a request. Without the network the last copy stays; when every catalog is
+     * known and none has the book any more, the overlay is dropped. Returns whether the book has an overlay.
+     */
+    suspend fun refreshStudio(sourceUrl: String, id: String): Boolean = withContext(Dispatchers.IO) {
+        val o = sources.books.origin(pluginIdOf(sourceUrl), id) ?: return@withContext false
+        val web = store.s.sources.filter { isWebSource(it.url) }
+        val cats = _catalogs.value
+        val m = StudioOverlay.match(o.plugin, o.book, web, cats)
+        if (m == null) {
+            if (web.all { cats.containsKey(it.url) } && StudioOverlay.file(context, sourceUrl, id).exists()) {
+                StudioOverlay.delete(context, sourceUrl, id); reloadLocal()
+            }
+            return@withContext false
+        }
+        val (src, meta) = m
+        val b = Book(src, meta)
+        runCatching {
+            val list = json.decodeFromString(ListSerializer(ChapterMeta.serializer()), get(b.indexUrl))
+            val old = StudioOverlay.load(context, sourceUrl, id)
+            if (old == null || old.chapters != list || old.data != b.dataUrl || old.source != src.url || old.book != meta.id) {
+                StudioOverlay.save(context, sourceUrl, id, StudioOverlay.Link(src.url, meta.id, b.dataUrl, list, System.currentTimeMillis()))
+                reloadLocal()
+            }
+        }
+        true
     }
     private val allSources get() = store.s.sources + textSources.value
     private val sources get() = (context.applicationContext as io.github.notoboto.unison.UnisonApp).sources
@@ -112,8 +150,9 @@ class Repo(private val context: Context, private val store: Store) {
         if (isPluginSource(b.source.url)) {
             val checked = sources.books.table(pluginIdOf(b.source.url), b.meta.id)?.checked ?: 0
             if (System.currentTimeMillis() - checked >= pluginMaxAgeMs) sources.books.refresh(pluginIdOf(b.source.url), b.meta.id)   // chapters()
+            refreshStudio(b.source.url, b.meta.id)    // new chapters voiced in Studio (§12): one small request, only for matched books
         }
-        reloadLocal(); TextBooks.chapters(context, b.source.url, b.meta.id)
+        reloadLocal(); _chapters.value[b.key].orEmpty()
     } else runCatching {
         val text = get(b.indexUrl)
         val list = json.decodeFromString(ListSerializer(ChapterMeta.serializer()), text).sortedBy { it.n }

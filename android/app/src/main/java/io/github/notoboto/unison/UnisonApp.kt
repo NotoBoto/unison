@@ -120,7 +120,8 @@ fun importSyncFile(ctx: Context, text: String, added: (Int) -> Unit = {}): io.gi
             runCatching {
                 val d = app.sources.details(plugin, bookId)
                 val chs = app.sources.chapters(plugin, bookId)
-                app.sources.books.add(plugin, d, chs)
+                val id = app.sources.books.add(plugin, d, chs)
+                app.repo.refreshStudio(io.github.notoboto.unison.data.pluginSourceUrl(plugin), id)   // Studio chapters (§12)
             }.onSuccess { n++ }
         }
         if (n > 0) {

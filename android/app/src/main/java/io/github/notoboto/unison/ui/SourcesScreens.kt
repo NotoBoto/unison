@@ -446,6 +446,7 @@ fun PluginBookScreen(nav: NavController, pluginId: String, bookId: String) {
                         scope.launch {
                             runCatching { app.sources.books.add(pluginId, d, chapters!!) }.onSuccess { id ->
                                 app.repo.reloadLocal()
+                                app.scope.launch { app.repo.refreshStudio(src, id) }    // chapters voiced in Unison Studio (§12)
                                 app.store.update { s -> if (s.library.any { it.sourceUrl == src && it.bookId == id }) s
                                     else s.copy(library = s.library + io.github.notoboto.unison.data.LibEntry(src, id)) }
                                 nav.navigate("book/$key")

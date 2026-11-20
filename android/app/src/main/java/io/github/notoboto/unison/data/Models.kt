@@ -44,6 +44,12 @@ data class ChapterMeta(
     val parts: List<Long>? = null,
     /** illustrations between paragraphs (Unison Studio books) */
     val images: List<ChapterImage> = emptyList(),
+    /** Studio books made from a site (§19.7): the plugin's chapterId and the chapter hash (§19.5) */
+    val id: String? = null,
+    val hash: String? = null,
+    /** a plugin book's chapter voiced in Unison Studio («наложение», §12): its files without the extension,
+     *  e.g. "https://unison-x.pages.dev/ch003"; set in memory only, never saved to the book's own index.json */
+    val studio: String? = null,
 )
 
 /** A picture after paragraph [after] of the chapter (index in "paras", 0 = title); [src] is relative to the data folder. */
