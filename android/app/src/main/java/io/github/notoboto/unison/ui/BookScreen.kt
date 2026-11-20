@@ -159,7 +159,8 @@ fun BookScreen(nav: NavController, key: String) {
     val ownText = book.source.url == io.github.notoboto.unison.data.LOCAL_URL     // imported: the text is always here
     val audioLabel = if (textBook) "Озвучить" else "Скачать аудио"
     // a plugin book with chapters voiced in Unison Studio (§12): 🎭 for those, 📱 for the ones the phone voices
-    val mixed = textBook && book.chapters.any { it.studio != null }
+    val studioBooks by app.repo.studioBooks.collectAsState()
+    val mixed = textBook && key in studioBooks
     fun continueTarget(): Int? {
         val last = st.last[key]
         var ch = book.chapters.find { it.n == last }

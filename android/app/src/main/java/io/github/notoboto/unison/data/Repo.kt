@@ -41,6 +41,9 @@ class Repo(private val context: Context, private val store: Store) {
     /** Text books on the phone: imported files (local://) and books of source plugins (src://<plugin>/), §8.3.
      *  Declared before init: properties and init blocks run in source order. */
     private val textSources = MutableStateFlow(listOf(LOCAL_SOURCE))
+    /** Keys of plugin books with a Unison Studio version («наложение», §12), even while none of their chapters plays it. */
+    private val _studioBooks = MutableStateFlow<Set<String>>(emptySet())
+    val studioBooks: StateFlow<Set<String>> = _studioBooks
 
     init { loadCached(); reloadLocal() }
 
@@ -48,6 +51,9 @@ class Repo(private val context: Context, private val store: Store) {
     fun reloadLocal() {
         val srcs = listOf(LOCAL_SOURCE) + TextBooks.pluginSources(context).map { Source(it, TextBooks.pluginName(context, it)) }
         textSources.value = srcs
+        _studioBooks.value = srcs.filter { isPluginSource(it.url) }.flatMap { src ->
+            TextBooks.root(context, src.url).listFiles()?.filter { File(it, "studio.json").exists() }?.map { bookKey(src.url, it.name) }.orEmpty()
+        }.toSet()
         for (src in srcs) {
             val list = TextBooks.catalog(context, src.url)
             _catalogs.update { it + (src.url to list) }
@@ -90,6 +96,61 @@ class Repo(private val context: Context, private val store: Store) {
                 reloadLocal()
             }
         }
+        switchToStudio(sourceUrl, id)
+        true
+    }
+
+    private val app get() = context.applicationContext as io.github.notoboto.unison.UnisonApp
+
+    /**
+     * §12: chapters the phone voiced itself that Unison Studio has voiced since then switch to the Studio version.
+     * A chapter not started yet loses its phone voicing and its Studio audio is downloaded in its place (it was on the
+     * phone); a listened one loses it only. A started one keeps it until it is listened to the end, or until it is opened
+     * again ([switchStarted], the position moves to the same word). The chapter open in the player is left alone.
+     */
+    fun switchToStudio(sourceUrl: String, id: String) {
+        val key = bookKey(sourceUrl, id)
+        val phone = store.s.downloaded[key].orEmpty().filterValues { it == "tts" }.keys
+        if (phone.isEmpty()) return
+        val link = StudioOverlay.load(context, sourceUrl, id) ?: return
+        val ids = StudioOverlay.chapterIds(context, sourceUrl, id)
+        val open = runCatching { app.player.now.value }.getOrNull()
+        val again = mutableListOf<Int>()
+        for (n in phone) {
+            if (StudioOverlay.studioChapter(link, ids, n) == null) continue
+            if (open?.book?.key == key && open.n == n) continue
+            val p = store.progress(key, n)
+            if (!p.done && p.pos > 0) continue
+            deleteLocal(key, n)
+            if (!p.done) again += n
+        }
+        if (again.isNotEmpty()) book(key)?.let { app.downloads.enqueue(it, again) }
+    }
+
+    /** Whether opening chapter [n] switches it from the phone's voicing to Studio's ([switchStarted]). */
+    fun studioWaiting(b: Book, n: Int): Boolean = isPluginSource(b.source.url) && store.s.downloaded[b.key]?.get(n) == "tts" &&
+        StudioOverlay.studioChapter(StudioOverlay.load(context, b.source.url, b.meta.id), StudioOverlay.chapterIds(context, b.source.url, b.meta.id), n) != null
+
+    /**
+     * Switches chapter [n], voiced by the phone, to its Studio version (§12). The position moves to the same word of the same
+     * paragraph, or by the share of time when the chapter hashes differ. Without the network nothing changes (false).
+     */
+    suspend fun switchStarted(b: Book, n: Int): Boolean = withContext(Dispatchers.IO) {
+        if (store.s.downloaded[b.key]?.get(n) != "tts") return@withContext false
+        val link = StudioOverlay.load(context, b.source.url, b.meta.id) ?: return@withContext false
+        val s = StudioOverlay.studioChapter(link, StudioOverlay.chapterIds(context, b.source.url, b.meta.id), n) ?: return@withContext false
+        val studio = runCatching { parseChapter(get(link.data + "ch%03d.json".format(s.n))) }.getOrNull() ?: return@withContext false
+        val p = store.progress(b.key, n)
+        if (p.pos > 0 && !p.done) {
+            val phone = runCatching { parseChapter(files.readText(b.key, n, "json")) }.getOrNull()
+            val e = sources.books.table(pluginIdOf(b.source.url), b.meta.id)?.chapters?.find { it.n == n }
+            val same = e != null && !e.textChanged && e.hash != null && e.hash == s.hash
+            val pos = phone?.let { PositionMap.map(it, p.pos, studio, same) }
+                ?: (if (studio.duration > 0 && (b.chapters.find { it.n == n }?.duration ?: 0.0) > 0) p.pos / b.chapters.first { it.n == n }.duration * studio.duration else 0.0)
+            store.setPos(b.key, n, pos, studio.duration)
+        }
+        deleteLocal(b.key, n)
+        if (!p.done) book(b.key)?.let { app.downloads.enqueue(it, listOf(n)) }    // it was on the phone: keep it there
         true
     }
     private val allSources get() = store.s.sources + textSources.value

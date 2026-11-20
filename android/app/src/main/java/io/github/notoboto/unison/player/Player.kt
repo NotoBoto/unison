@@ -516,8 +516,16 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
     private val audioBooks = java.util.concurrent.ConcurrentHashMap<String, Boolean>()   // imported audiobooks never turn into text
 
     /** Load a chapter; continue from saved position unless it was finished. */
-    fun open(b: Book, n: Int, autoplay: Boolean) {
+    fun open(b: Book, n: Int, autoplay: Boolean, switchToStudio: Boolean = true) {
         if (now.value?.book?.key == b.key && now.value?.n == n && exo.mediaItemCount > 0) { if (autoplay) play(); return }
+        // voiced by the phone, voiced in Unison Studio since: switch now, at the same word (SOURCES_DESIGN.md §12)
+        if (switchToStudio && app.repo.studioWaiting(b, n)) {
+            scope.launch {
+                app.repo.switchStarted(b, n)
+                open(app.repo.book(b.key) ?: b, n, autoplay, switchToStudio = false)
+            }
+            return
+        }
         if (!hasAudio(b, n)) {
             resolve(b, n); exo.clearMediaItems(); return       // text only until the chapter is voiced
         }
@@ -595,6 +603,9 @@ class PlayerController(private val ctx: Context, private val app: UnisonApp, pri
         val next = neighbour(1) ?: return
         val book = app.repo.book(np.book.key) ?: np.book
         open(book, next, autoplay = true)
+        // the chapter just listened to, voiced by the phone, gives way to its Studio version (§12)
+        if (io.github.notoboto.unison.data.isPluginSource(book.source.url))
+            scope.launch(kotlinx.coroutines.Dispatchers.IO) { app.repo.switchToStudio(book.source.url, book.meta.id) }
     }
 
     // ---------- sleep timer ----------

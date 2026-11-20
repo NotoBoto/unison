@@ -33,7 +33,10 @@ class StudioOverlayLiveTest {
         app.sources.repos.updates().forEach { (inst, info) -> app.sources.install(inst.repo, info) }
     }
 
-    @After fun clean() { made.forEach { TextBooks.delete(ctx, src, it) }; app.repo.reloadLocal() }
+    @After fun clean() {
+        app.downloads.cancelAll()
+        made.forEach { app.repo.deleteLocal(bookKey(src, it), 1); TextBooks.delete(ctx, src, it) }; app.repo.reloadLocal()
+    }
 
     @Test fun pluginBookGetsTheStudioChapters() = runBlocking<Unit> {
         latestPlugins()
@@ -63,8 +66,9 @@ class StudioOverlayLiveTest {
         val id = app.sources.books.add("wikisource-ru", app.sources.details("wikisource-ru", bookId), app.sources.chapters("wikisource-ru", bookId)).also { made += it }
         assertTrue(app.repo.refreshStudio(src, id))
         val key = bookKey(src, id)
+        val n = app.repo.book(key)!!.chapters.single().n
+        app.downloads.cancelAll(); app.repo.deleteLocal(key, n)
         val b = app.repo.book(key)!!
-        val n = b.chapters.single().n
 
         // played and read from Studio, no voicing on the phone
         assertTrue(app.player.hasAudio(b, n))
@@ -97,10 +101,13 @@ class StudioOverlayLiveTest {
         app.repo.reloadLocal()
         val n = app.repo.book(key)!!.chapters.single().n
         app.store.markDownloaded(key, n, "tts")      // voiced on the phone before Studio published the chapter
+        app.store.setPos(key, n, 30.0, 300.0)       // and started: kept until listened or opened again (step 5)
         assertTrue(app.repo.refreshStudio(src, id))
         assertNull("the phone's voicing stays", app.repo.book(key)!!.chapters.single().studio)
+        assertTrue("still a book with a Studio version (📱 in the list)", key in app.repo.studioBooks.value)
         app.repo.deleteLocal(key, n)
         assertNotNull("deleted: the Studio chapter takes its place", app.repo.book(key)!!.chapters.single().studio)
+        app.store.setDone(key, listOf(n), false)
     }
 
     /** Every word of the phone's voicing (tokens as TtsWorker makes them) lands on the same word in Studio's chNNN.json. */
