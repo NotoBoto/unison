@@ -77,6 +77,7 @@ import io.github.notoboto.unison.data.Book
 import io.github.notoboto.unison.data.Source
 import io.github.notoboto.unison.data.bookKey
 import io.github.notoboto.unison.data.normalizeSource
+import io.github.notoboto.unison.data.shown
 import io.github.notoboto.unison.data.AppState
 import io.github.notoboto.unison.data.Settings
 import androidx.compose.foundation.layout.Arrangement
@@ -464,7 +465,7 @@ fun BrowseScreen(nav: NavController) {
             }
             if (gq.isNotBlank()) {
                 val qq = gq.trim().lowercase()
-                val hits = st.sources.flatMap { src -> catalogs[src.url].orEmpty().filter { m ->
+                val hits = st.sources.flatMap { src -> catalogs[src.url].orEmpty().shown(st.settings.showNsfw).filter { m ->
                     listOf(m.title, m.author.orEmpty(), m.description.orEmpty(), m.tags.joinToString(" ")).any { it.lowercase().contains(qq) } }.map { src to it } }
                 item {
                     ListItem(headlineContent = { Text("Искать «${gq.trim()}» в расширениях") },
@@ -497,7 +498,7 @@ fun BrowseScreen(nav: NavController) {
             item { InstalledSourcesRows(nav) }
             item { GroupHeader("Источники") }
             itemsIndexed(st.sources) { i, src ->
-                val n = catalogs[src.url]?.size
+                val n = catalogs[src.url]?.shown(st.settings.showNsfw)?.size
                 ListItem(headlineContent = { Text(src.name) },
                     supportingContent = { Text(src.url.removePrefix("https://").removeSuffix("/") + (n?.let { " • ${it} ${plural(it, "книга", "книги", "книг")}" } ?: "")) },
                     leadingContent = { Icon(Icons.Filled.Public, null, tint = MaterialTheme.colorScheme.primary) },
@@ -548,7 +549,7 @@ fun CatalogScreen(nav: NavController, srcIdx: Int) {
     val st by app.store.state.collectAsState()
     val catalogs by app.repo.catalogs.collectAsState()
     val src = if (srcIdx == -1) io.github.notoboto.unison.data.LOCAL_SOURCE else st.sources.getOrNull(srcIdx) ?: return
-    val list = catalogs[src.url].orEmpty()
+    val list = catalogs[src.url].orEmpty().shown(st.settings.showNsfw)
     val scope = rememberCoroutineScope()
     Scaffold(topBar = { BackBar(nav, src.name) { IconButton(onClick = { scope.launch { app.repo.refreshSource(src) } }) { Icon(Icons.Filled.Refresh, "Обновить") } } }) { pad ->
         if (list.isEmpty()) EmptyState("🌐", "Каталог пуст или нет интернета.", Modifier.padding(pad))

@@ -18,7 +18,18 @@ data class BookMeta(
     val tags: List<String> = emptyList(),
     val description: String? = null,
     val credits: String? = null,
+    /** A Unison Studio book voiced from a site: the plugin book it was made from (SOURCES_DESIGN.md §12, §19.7). The same
+     *  book added through that plugin gets the Studio chapters («наложение»). */
+    val origin: BookOrigin? = null,
+    /** 18+: hidden while «Показывать 18+» is off (decision 15). */
+    val nsfw: Boolean = false,
 )
+
+@Serializable
+data class BookOrigin(val plugin: String, val book: String)
+
+/** Catalog books the user may see: 18+ ones only with «Показывать 18+» on (decision 15). */
+fun List<BookMeta>.shown(showNsfw: Boolean): List<BookMeta> = if (showNsfw) this else filter { !it.nsfw }
 
 /** One entry of a book's index.json. */
 @Serializable

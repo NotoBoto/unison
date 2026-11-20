@@ -129,7 +129,7 @@ class Repo(private val context: Context, private val store: Store) {
             // only web sources have a books.json; a stray local:// or src:// entry (old sync imports) is skipped
             val srcFails = store.s.sources.filter { isWebSource(it.url) }.map { async { refreshSource(it).isFailure } }.awaitAll().count { it }
             if (!store.s.firstRunDone) {   // first launch: put the default source's books into the library
-                val first = _catalogs.value[DEFAULT_SOURCE.url].orEmpty()
+                val first = _catalogs.value[DEFAULT_SOURCE.url].orEmpty().shown(store.s.settings.showNsfw)
                 store.update { st -> st.copy(firstRunDone = true, library = st.library + first.filter { m -> st.library.none { it.bookId == m.id } }.map { LibEntry(DEFAULT_SOURCE.url, it.id) }) }
             }
             val bookFails = libraryBooks().map { async { refreshBook(it, pluginMaxAgeMs).isFailure } }.awaitAll().count { it }
