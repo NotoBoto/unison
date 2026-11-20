@@ -26,10 +26,17 @@ class StudioOverlayLiveTest {
     private val src = pluginSourceUrl("wikisource-ru")
     private val made = mutableListOf<String>()
 
+    /** The built-in Wikisource in the APK is 1.0.0; Studio voiced the chapter with 1.0.2 (the title without «ПСС 1975»),
+     *  which phones get by the automatic plugin update. */
+    private suspend fun latestPlugins() {
+        app.sources.repos.ensureBuiltIns()
+        app.sources.repos.updates().forEach { (inst, info) -> app.sources.install(inst.repo, info) }
+    }
+
     @After fun clean() { made.forEach { TextBooks.delete(ctx, src, it) }; app.repo.reloadLocal() }
 
     @Test fun pluginBookGetsTheStudioChapters() = runBlocking<Unit> {
-        app.sources.repos.ensureBuiltIns()
+        latestPlugins()
         assertTrue(app.repo.refreshSource(DEFAULT_SOURCE).isSuccess)
         val bookId = "Толстый и тонкий (Чехов)"
         // the chapter ids come from the plugin itself: they must be the ones Studio published
@@ -50,7 +57,7 @@ class StudioOverlayLiveTest {
     }
 
     @Test fun studioChapterIsReadPlayedAndDownloadedFromStudio() = runBlocking<Unit> {
-        app.sources.repos.ensureBuiltIns()
+        latestPlugins()
         assertTrue(app.repo.refreshSource(DEFAULT_SOURCE).isSuccess)
         val bookId = "Толстый и тонкий (Чехов)"
         val id = app.sources.books.add("wikisource-ru", app.sources.details("wikisource-ru", bookId), app.sources.chapters("wikisource-ru", bookId)).also { made += it }
@@ -70,7 +77,9 @@ class StudioOverlayLiveTest {
         // «Скачать» downloads the Studio files instead of voicing
         app.downloads.enqueue(b, listOf(n))
         val until = System.currentTimeMillis() + 90_000
-        while (!app.store.isDownloaded(key, n) && System.currentTimeMillis() < until) kotlinx.coroutines.delay(500)
+        // the worker marks the chapter, then WorkManager reports the job finished
+        while ((!app.store.isDownloaded(key, n) || app.downloads.state(b, n) != io.github.notoboto.unison.download.DlState.Done) &&
+            System.currentTimeMillis() < until) kotlinx.coroutines.delay(500)
         assertEquals(b.chapters.single().v, app.store.s.downloaded[key]?.get(n))
         assertEquals(io.github.notoboto.unison.download.DlState.Done, app.downloads.state(b, n))
         assertTrue(app.repo.audioUri(b, n).startsWith("file:"))
@@ -80,7 +89,7 @@ class StudioOverlayLiveTest {
     }
 
     @Test fun phoneVoicedChapterKeepsItsVoicingUntilDeleted() = runBlocking<Unit> {
-        app.sources.repos.ensureBuiltIns()
+        latestPlugins()
         assertTrue(app.repo.refreshSource(DEFAULT_SOURCE).isSuccess)
         val bookId = "Толстый и тонкий (Чехов)"
         val id = app.sources.books.add("wikisource-ru", app.sources.details("wikisource-ru", bookId), app.sources.chapters("wikisource-ru", bookId)).also { made += it }
@@ -94,8 +103,45 @@ class StudioOverlayLiveTest {
         assertNotNull("deleted: the Studio chapter takes its place", app.repo.book(key)!!.chapters.single().studio)
     }
 
+    /** Every word of the phone's voicing (tokens as TtsWorker makes them) lands on the same word in Studio's chNNN.json. */
+    @Test fun positionMovesWordForWordOnTheRealChapter() = runBlocking<Unit> {
+        latestPlugins()
+        assertTrue(app.repo.refreshSource(DEFAULT_SOURCE).isSuccess)
+        val bookId = "Толстый и тонкий (Чехов)"
+        val id = app.sources.books.add("wikisource-ru", app.sources.details("wikisource-ru", bookId), app.sources.chapters("wikisource-ru", bookId)).also { made += it }
+        assertTrue(app.repo.refreshStudio(src, id))
+        val b = app.repo.book(bookKey(src, id))!!
+        val n = b.chapters.single().n
+        val studio = app.repo.chapterText(b, n)
+        val text = app.sources.books.ensureText("wikisource-ru", id, n)
+        val phoneHash = app.sources.books.table("wikisource-ru", id)!!.chapters.single { it.n == n }.hash
+        assertEquals("the same text as Studio voiced", b.chapters.single().hash, phoneHash)
+
+        // the phone's voicing: title, then each paragraph; a dialogue paragraph gets its own "—" token; even timings
+        var t = 0.0
+        val paras = (listOf(text.title) + text.paras).mapIndexed { pi, p ->
+            val dialogue = pi > 0 && p.trimStart().let { it.startsWith("—") || it.startsWith("–") || it.startsWith("-") }
+            (if (dialogue) listOf(Tok("—", t, 0)) else emptyList()) + p.split(Regex("\\s+")).filter { it.isNotEmpty() }.map { w -> Tok(w, t, 0).also { t += 0.4 } }
+        }
+        val phone = ChapterText(n, text.title, listOf("Рассказчик"), paras, t)
+        assertEquals("paragraphs line up", studio.paras.size, phone.paras.size)
+
+        var words = 0; var same = 0
+        phone.paras.forEachIndexed { pi, p -> p.forEach { tok ->
+            val w = PositionMap.norm(tok.word) ?: return@forEach
+            words++
+            val to = PositionMap.map(phone, tok.t!! + 0.01, studio, sameText = true)
+            // the same word of the same paragraph starts there
+            if (studio.paras[pi].any { it.t == to && PositionMap.norm(it.word) == w }) same++
+        } }
+        assertTrue("words: $words", words > 300)
+        assertTrue("same word: $same of $words", same >= words * 0.99)
+        // another text (e.g. the chapter changed on the site): by the share of time
+        assertEquals(studio.duration / 2, PositionMap.map(phone, phone.duration / 2, studio, sameText = false), 1e-6)
+    }
+
     @Test fun bookWithoutStudioVersionHasNoOverlay() = runBlocking<Unit> {
-        app.sources.repos.ensureBuiltIns()
+        latestPlugins()
         assertTrue(app.repo.refreshSource(DEFAULT_SOURCE).isSuccess)
         val id = app.sources.books.add("wikisource-ru", BookDetails(id = "Нет такой книги в Studio", title = "Нет", url = "https://ru.wikisource.org/wiki/x"),
             listOf(ChapterStub("Нет такой книги в Studio", "Нет", "https://ru.wikisource.org/wiki/x"))).also { made += it }
