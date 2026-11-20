@@ -96,6 +96,19 @@ import io.github.notoboto.unison.scheduleAutoBackup
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import io.github.notoboto.unison.data.BookRoles
+import io.github.notoboto.unison.data.RoleColors
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import java.time.LocalDate
 
 // ---------------- categories ----------------
@@ -437,6 +450,17 @@ fun CharactersScreen(nav: NavController, key: String) {
     val mp = remember { android.media.MediaPlayer() }
     androidx.compose.runtime.DisposableEffect(Unit) { onDispose { runCatching { mp.release() } } }
     androidx.compose.runtime.LaunchedEffect(key) { list = app.repo.characters(book) }
+    // only this book's colours and the reader's background: setPos/addListened during play must not recompose the list
+    // (ROLE_COLORS_PICK_REVIEW.md С3); BookRoles changes once per chapter opened and on the user's choice
+    val view by remember(key) { app.store.state.map { it.roleColors[key] to it.settings.readerBg }.distinctUntilChanged() }
+        .collectAsState(null)
+    val br = view?.first ?: BookRoles()
+    val readerBg = view?.second ?: "theme"
+    val look = rememberLook(remember(readerBg) { io.github.notoboto.unison.data.Settings(readerBg = readerBg) })
+    val palette = if (look.lightBg) roleColorsLight else roleColorsDark
+    var colorFor by remember { mutableStateOf<String?>(null) }
+    var menu by remember { mutableStateOf(false) }
+    var confirmReset by remember { mutableStateOf(false) }
     fun play(c: io.github.notoboto.unison.data.Character) {
         runCatching { mp.reset() }
         if (playing == c.name) { playing = null; return }
@@ -446,18 +470,40 @@ fun CharactersScreen(nav: NavController, key: String) {
             playing = c.name
         }
     }
-    Scaffold(topBar = { BackBar(nav, "Действующие лица") }) { pad ->
+    Scaffold(topBar = { BackBar(nav, "Действующие лица") {
+        if (br.pinned.isNotEmpty()) Box {
+            IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "Ещё") }
+            DropdownMenu(menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text("Сбросить ручные цвета (${br.pinned.size})") }, onClick = { menu = false; confirmReset = true })
+            }
+        }
+    } }) { pad ->
         val l = list
         when {
             l == null -> EmptyState("⏳", "Загружаю…", Modifier.padding(pad))
             l.isEmpty() -> EmptyState("🎭", "Для этой книги нет списка действующих лиц или нет интернета.", Modifier.padding(pad))
             else -> LazyColumn(Modifier.padding(pad)) {
-                item { Text("Нажмите ▶, чтобы услышать голос. В тексте главы нажатие на имя в списке ролей подсвечивает реплики персонажа. Долгое нажатие — выбрать цвет.",
+                item { Text("Нажмите ▶, чтобы услышать голос, на персонажа — чтобы выбрать его цвет в тексте. В тексте главы нажатие на имя в списке ролей подсвечивает реплики персонажа, долгое нажатие — выбирает цвет.",
                     Modifier.padding(16.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 items(l, key = { it.name }) { c ->
                     val range = if (c.chapters.isEmpty()) "" else if (c.chapters.size == 1) "глава ${c.chapters[0]}" else "главы ${c.chapters.first()}–${c.chapters.last()} (${c.chapters.size})"
+                    val pin = br.pinned[c.name]
+                    val col = (pin ?: br.color[c.name])?.let { Math.floorMod(it, palette.size) }
                     ListItem(headlineContent = { Text(c.name, fontWeight = FontWeight.Medium) },
-                        supportingContent = { Text("${c.voice}\nРеплик: ${c.lines} • $range") },
+                        // the narrator is never coloured in the text (index 0), so there is nothing to choose for it
+                        modifier = if (c.narrator) Modifier else Modifier.combinedClickable(onClickLabel = "выбрать цвет",
+                            onLongClickLabel = "выбрать цвет", onLongClick = { colorFor = c.name }) { colorFor = c.name },
+                        leadingContent = {
+                            if (c.narrator) Spacer(Modifier.size(32.dp)) else
+                            // the reader's background under the circle: the palette is the text's, so it sits on the text's ground
+                            Box(Modifier.size(32.dp).clip(CircleShape).background(look.bg)
+                                .semantics { contentDescription = if (col == null) "цвета ещё нет" else "цвет " + roleColorNames.getOrElse(col) { "${col + 1}" } },
+                                contentAlignment = Alignment.Center) {
+                                if (col != null) Box(Modifier.size(20.dp).clip(CircleShape).background(palette[col]))
+                                else Box(Modifier.size(20.dp).border(1.5.dp, look.fg.copy(alpha = 0.5f), CircleShape))
+                            }
+                        },
+                        supportingContent = { Text("${c.voice}\nРеплик: ${c.lines} • $range" + if (pin != null) "\nЦвет выбран вручную" else "") },
                         trailingContent = {
                             if (c.sample != null) IconButton(onClick = { play(c) }) {
                                 Icon(if (playing == c.name) Icons.Filled.Stop else Icons.Filled.PlayArrow, "Образец голоса", tint = MaterialTheme.colorScheme.primary)
@@ -467,6 +513,20 @@ fun CharactersScreen(nav: NavController, key: String) {
             }
         }
     }
+    colorFor?.let { name ->
+        val owners = remember(br, name) { RoleColors.owners(br, name) }
+        // outside a chapter: no speakers on screen; the owners of the chosen colour give it up in the whole book at once
+        RoleColorDialog(name, current = br.pinned[name] ?: br.color[name] ?: -1, pinned = br.pinned.containsKey(name),
+            palette = palette, bg = look.bg, fg = look.fg, others = emptyMap(), owners = owners, pinnedCount = br.pinned.size,
+            onPick = { k -> app.store.pinRoleColors(key, -1, emptyList()) { if (k == null) it - name else it + (name to k) } },
+            onResetAll = { app.store.pinRoleColors(key, -1, emptyList()) { emptyMap() } },
+            onDismiss = { colorFor = null })
+    }
+    if (confirmReset) AlertDialog(onDismissRequest = { confirmReset = false },
+        title = { Text("Сбросить ручные цвета (${br.pinned.size})?") },
+        text = { Text("Персонажи вернутся к автоматическим.") },
+        confirmButton = { TextButton(onClick = { confirmReset = false; app.store.pinRoleColors(key, -1, emptyList()) { emptyMap() } }) { Text("Сбросить") } },
+        dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Отмена") } })
 }
 
 // ---------------- Piper voices ----------------
