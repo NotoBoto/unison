@@ -528,8 +528,23 @@ fun BrowseScreen(nav: NavController) {
                 scope.launch {
                     val r = app.repo.refreshSource(src)
                     if (r.isSuccess) { app.store.update { s -> if (s.sources.any { it.url == src.url }) s else s.copy(sources = s.sources + src) }
-                        snack.showSnackbar("Источник добавлен: ${r.getOrNull()?.size} книг") }
-                    else snack.showSnackbar("Не нашёл books.json по этому адресу")
+                        snack.showSnackbar("Источник добавлен: ${r.getOrNull()?.size} книг"); return@launch }
+                    // no books.json: the address may be a plugin repository (signed index.json) — add it as in «Расширения»; src.url already has https://
+                    val repo = try { app.sources.addRepo(src.url.removeSuffix("index.json/")) }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (e: Exception) {
+                        // index.json is there but rejected («index signature…» / «index format…»): say why, not «no books.json»
+                        val msg = e.message.orEmpty()
+                        when {
+                            msg.startsWith("index signature") -> { snack.showSnackbar("Это репозиторий расширений, но он не подписан ключом Unison"); return@launch }
+                            msg.startsWith("index format") -> { snack.showSnackbar("Это репозиторий расширений нового формата — обновите приложение"); return@launch }
+                        }
+                        null
+                    }
+                    if (repo != null) {
+                        android.widget.Toast.makeText(ctx, "Это репозиторий расширений «${repo.index.repo.name}» — добавлен в «Расширения»", android.widget.Toast.LENGTH_LONG).show()
+                        nav.navigate("extensions")
+                    } else snack.showSnackbar("Не нашёл books.json по этому адресу")
                 }
             }, enabled = url.isNotBlank()) { Text("Добавить") }
         }, dismissButton = { TextButton(onClick = { adding = false }) { Text("Отмена") } })
